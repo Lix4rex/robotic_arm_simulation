@@ -1,0 +1,53 @@
+- ros_topic_name: "/model/panda/joint/panda_finger_joint1/cmd_pos"
+  gz_topic_name: "/model/panda/joint/panda_finger_joint1/0/cmd_pos"
+  ros_type_name: "std_msgs/msg/Float64"
+  gz_type_name: "gz.msgs.Double"
+  direction: ROS_TO_GZ
+
+- ros_topic_name: "/model/panda/joint/panda_finger_joint2/cmd_pos"
+  gz_topic_name: "/model/panda/joint/panda_finger_joint2/0/cmd_pos"
+  ros_type_name: "std_msgs/msg/Float64"
+  gz_type_name: "gz.msgs.Double"
+  direction: ROS_TO_GZ
+
+- ros_topic_name: "/model/panda/joint/panda_joint1/cmd_pos"
+  gz_topic_name: "/model/panda/joint/panda_joint1/0/cmd_pos"
+  ros_type_name: "std_msgs/msg/Float64"
+  gz_type_name: "gz.msgs.Double"
+  direction: ROS_TO_GZ
+
+- ros_topic_name: "/model/panda/joint/panda_joint2/cmd_pos"
+  gz_topic_name: "/model/panda/joint/panda_joint2/0/cmd_pos"
+  ros_type_name: "std_msgs/msg/Float64"
+  gz_type_name: "gz.msgs.Double"
+  direction: ROS_TO_GZ
+
+- ros_topic_name: "/model/panda/joint/panda_joint3/cmd_pos"
+  gz_topic_name: "/model/panda/joint/panda_joint3/0/cmd_pos"
+  ros_type_name: "std_msgs/msg/Float64"
+  gz_type_name: "gz.msgs.Double"
+  direction: ROS_TO_GZ
+
+- ros_topic_name: "/model/panda/joint/panda_joint4/cmd_pos"
+  gz_topic_name: "/model/panda/joint/panda_joint4/0/cmd_pos"
+  ros_type_name: "std_msgs/msg/Float64"
+  gz_type_name: "gz.msgs.Double"
+  direction: ROS_TO_GZ
+
+- ros_topic_name: "/model/panda/joint/panda_joint5/cmd_pos"
+  gz_topic_name: "/model/panda/joint/panda_joint5/0/cmd_pos"
+  ros_type_name: "std_msgs/msg/Float64"
+  gz_type_name: "gz.msgs.Double"
+  direction: ROS_TO_GZ
+
+- ros_topic_name: "/model/panda/joint/panda_joint6/cmd_pos"
+  gz_topic_name: "/model/panda/joint/panda_joint6/0/cmd_pos"
+  ros_type_name: "std_msgs/msg/Float64"
+  gz_type_name: "gz.msgs.Double"
+  direction: ROS_TO_GZ
+
+- ros_topic_name: "/model/panda/joint/panda_joint7/cmd_pos"
+  gz_topic_name: "/model/panda/joint/panda_joint7/0/cmd_pos"
+  ros_type_name: "std_msgs/msg/Float64"
+  gz_type_name: "gz.msgs.Double"
+  direction: ROS_TO_GZ

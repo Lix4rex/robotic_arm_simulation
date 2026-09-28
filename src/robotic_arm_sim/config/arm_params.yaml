@@ -1,0 +1,3 @@
+arm_controller:
+  ros__parameters:
+    test: true
