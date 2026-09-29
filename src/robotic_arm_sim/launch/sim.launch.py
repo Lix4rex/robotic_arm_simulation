@@ -54,7 +54,7 @@ def generate_launch_description():
 
     delayed_actions = TimerAction(
         period=10.0,
-        actions=[bridge, arm_controller],
+        actions=[bridge],
     )
 
     return LaunchDescription([
