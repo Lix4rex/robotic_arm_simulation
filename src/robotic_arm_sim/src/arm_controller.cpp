@@ -70,7 +70,6 @@ class ArmController : public rclcpp::Node{
                 rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr panda_joint7_pub_;
 
                 void publish_joint_positions(const Eigen::Matrix<double, 7, 1>& q){
-
                         std_msgs::msg::Float64 msg;
 
                         msg.data = q(0);
@@ -98,9 +97,9 @@ class ArmController : public rclcpp::Node{
                 // Command topic
                 rclcpp::Subscription<robot_msgs::msg::TargetPosition>::SharedPtr target_position_sub_;
                 void target_position_callback(const robot_msgs::msg::TargetPosition::SharedPtr msg){
-                        double x_target = msg->x_target;
+                        double x_target = msg->x_target - 0.2;
                         double y_target = msg->y_target;
-                        double z_target = msg->z_target;
+                        double z_target = msg->z_target - 1.52;
 
                         Eigen::Vector3d target(
                                 x_target,
@@ -108,36 +107,15 @@ class ArmController : public rclcpp::Node{
                                 z_target
                         );                      
                         
-                        // Configuration initiale// Configuration initiale
-                        Eigen::Matrix<double, 7, 1> joint_angles;
+                        Eigen::Matrix<double, 7, 1> q0;
 
-                        joint_angles << -2.41,
-                                        0.72,
-                                        1.17,
-                                        -3.07,
-                                        -2.90,
-                                        3.72,
-                                        -1.08;
-
-                        Eigen::Vector3d position = forward_kinematics(
-                                joint_angles(0),
-                                joint_angles(1),
-                                joint_angles(2),
-                                joint_angles(3),
-                                joint_angles(4),
-                                joint_angles(5),
-                                joint_angles(6)
-                        );
-
-                        RCLCPP_INFO(
-                                this->get_logger(),
-                                "Position : x=%f y=%f z=%f",
-                                position.x() + 0.2,
-                                position.y(),
-                                position.z() + 1.02
-                        );
-
-                        /*
+                        q0 << 0.0,
+                              0.0,
+                              0.0,
+                              -1.5,
+                              0.0,
+                              1.0,
+                              0.0;
 
                         Eigen::Matrix<double, 7, 1> q = inverse_kinematics(target, q0);
 
@@ -156,7 +134,7 @@ class ArmController : public rclcpp::Node{
                                 i + 1,
                                 q(i)
                                 );
-                        }*/
+                        }
                 }
 
                 Eigen::Matrix4d T10(double alpha1){
@@ -252,96 +230,115 @@ class ArmController : public rclcpp::Node{
                         return T;
                 }
 
-                Eigen::Vector3d forward_kinematics(double alpha1, double alpha2, double alpha3, double alpha4, double alpha5, double alpha6, double alpha7){
-                        Eigen::Matrix4d T = T10(alpha1) * T21(alpha2) * T32(alpha3) * T43(alpha4) * T54(alpha5) * T65(alpha6) * T76(alpha7) * T87();
-
-                        Eigen::Vector3d position;
-
-                        position.x() = T(0, 3);
-                        position.y() = T(1, 3);
-                        position.z() = T(2, 3);
-
-                        return position;
+                Eigen::Matrix4d forward_kinematics_matrix(const Eigen::Matrix<double, 7, 1>& q){
+                        return T10(q(0)) * T21(q(1)) * T32(q(2)) * T43(q(3)) * T54(q(4)) * T65(q(5)) * T76(q(6))* T87();
                 }
 
-                Eigen::Matrix<double, 3, 7> compute_jacobian(const Eigen::Matrix<double, 7, 1>& q){
-                        Eigen::Matrix<double, 3, 7> J;
+                Eigen::Vector3d orientation_error(const Eigen::Matrix3d& R_current, const Eigen::Matrix3d& R_target){
+                        Eigen::Vector3d error =
+                                0.5 * (
+                                R_current.col(0).cross(R_target.col(0)) +
+                                R_current.col(1).cross(R_target.col(1)) +
+                                R_current.col(2).cross(R_target.col(2))
+                                );
+
+                        return error;
+                }
+
+                Eigen::Matrix<double, 6, 7> compute_jacobian_6d(const Eigen::Matrix<double, 7, 1>& q){
+                        Eigen::Matrix<double, 6, 7> J;
 
                         const double epsilon = 1e-6;
 
-                        Eigen::Vector3d p0 = forward_kinematics(
-                                q(0), q(1), q(2), q(3),
-                                q(4), q(5), q(6)
-                        );
+                        Eigen::Matrix4d T0 = forward_kinematics_matrix(q);
+
+                        Eigen::Vector3d p0 = T0.block<3,1>(0,3);
+                        Eigen::Matrix3d R0 = T0.block<3,3>(0,0);
 
                         for (int i = 0; i < 7; i++)
                         {
                                 Eigen::Matrix<double, 7, 1> q_perturbed = q;
                                 q_perturbed(i) += epsilon;
 
-                                Eigen::Vector3d p1 = forward_kinematics(
-                                        q_perturbed(0),
-                                        q_perturbed(1),
-                                        q_perturbed(2),
-                                        q_perturbed(3),
-                                        q_perturbed(4),
-                                        q_perturbed(5),
-                                        q_perturbed(6)
-                                );
+                                Eigen::Matrix4d T1 = forward_kinematics_matrix(q_perturbed);
 
-                                J.col(i) = (p1 - p0) / epsilon;
+                                Eigen::Vector3d p1 = T1.block<3,1>(0,3);
+                                Eigen::Matrix3d R1 = T1.block<3,3>(0,0);
+
+                                // Jacobien positionnel
+                                J.block<3,1>(0,i) = (p1 - p0) / epsilon;
+
+                                // Jacobien rotationnel
+                                Eigen::Vector3d angular_error = orientation_error(R0, R1);
+
+                                J.block<3,1>(3,i) = angular_error / epsilon;
                         }
 
                         return J;
                 }
 
-                Eigen::Matrix<double, 7, 1> inverse_kinematics(const Eigen::Vector3d& target, Eigen::Matrix<double, 7, 1> q){
+                Eigen::Matrix<double, 7, 1> inverse_kinematics(const Eigen::Vector3d& target_position, Eigen::Matrix<double, 7, 1>& q){
                         const int max_iterations = 1000;
-                        const double tolerance = 1e-4;
-                        const double alpha = 0.5;
 
-                        for (int iteration = 0; iteration < max_iterations; iteration++)
-                        {
-                                // Position actuelle
-                                Eigen::Vector3d current_position =
-                                forward_kinematics(
-                                        q(0), q(1), q(2), q(3),
-                                        q(4), q(5), q(6)
-                                );
+                        const double position_tolerance = 1e-4;
+                        const double orientation_tolerance = 1e-4;
 
-                                // Erreur
-                                Eigen::Vector3d error = target - current_position;
+                        const double alpha = 0.3;
+                        const double lambda = 0.05;
 
-                                // Si on est suffisamment proche
-                                if (error.norm() < tolerance)
-                                {
-                                        RCLCPP_INFO(
-                                                this->get_logger(),
-                                                "IK converged after %d iterations",
-                                                iteration
-                                        );
+                        Eigen::Matrix3d R_target;
 
+                        R_target <<
+                                1,  0,  0,
+                                0, -1,  0,
+                                0,  0, -1;
+
+                        for (int iteration = 0; iteration < max_iterations; iteration++){
+                                Eigen::Matrix4d T = forward_kinematics_matrix(q);
+
+                                Eigen::Vector3d current_position = T.block<3,1>(0,3);
+                                Eigen::Matrix3d current_rotation = T.block<3,3>(0,0);
+
+                                Eigen::Vector3d position_error = target_position - current_position;
+                                Eigen::Vector3d rotation_error = orientation_error(current_rotation, R_target);
+
+                                Eigen::Matrix<double, 6, 1> error;
+
+                                error.head<3>() = position_error;
+                                error.tail<3>() = rotation_error;
+
+                                if (position_error.norm() < position_tolerance && rotation_error.norm() < orientation_tolerance){
+                                        RCLCPP_INFO(this->get_logger(), "IK converged after %d iterations",iteration);
                                         return q;
                                 }
 
-                                // Jacobienne
-                                Eigen::Matrix<double, 3, 7> J = compute_jacobian(q);
+                                Eigen::Matrix<double, 6, 7> J = compute_jacobian_6d(q);
 
-                                double lambda = 0.01;
+                                Eigen::Matrix<double, 7, 6> J_pseudo_inverse = J.transpose() *(J * J.transpose() + lambda * lambda * Eigen::Matrix<double, 6, 6>::Identity()).inverse();
+                                Eigen::Matrix<double, 7, 1> delta_q = alpha * J_pseudo_inverse * error;
 
-                                Eigen::Matrix3d damping =
-                                lambda * lambda * Eigen::Matrix3d::Identity();
-
-                                Eigen::Matrix<double, 7, 3> J_pseudo_inverse =
-                                J.transpose() *
-                                (J * J.transpose() + damping).inverse();
-                                
-                                // Variation des angles
-                                Eigen::Matrix<double, 7, 1> delta_q =
-                                alpha * J_pseudo_inverse * error;
-
-                                // Mise à jour
                                 q += delta_q;
+
+                                if (q(0) < -2.90) q(0) = -2.90;
+                                if (q(0) >  2.90) q(0) =  2.90;
+
+                                if (q(1) < -1.76) q(1) = -1.76;
+                                if (q(1) >  1.76) q(1) =  1.76;
+
+                                if (q(2) < -2.90) q(2) = -2.90;
+                                if (q(2) >  2.90) q(2) =  2.90;
+
+                                if (q(3) < -3.07) q(3) = -3.07;
+                                if (q(3) > -0.70) q(3) = -0.70;
+
+                                if (q(4) < -2.90) q(4) = -2.90;
+                                if (q(4) >  2.90) q(4) =  2.90;
+
+                                if (q(5) < -0.02) q(5) = -0.02;
+                                if (q(5) >  3.75) q(5) =  3.75;
+
+                                if (q(6) < -2.90) q(6) = -2.90;
+                                if (q(6) >  2.90) q(6) =  2.90;
                         }
 
                         RCLCPP_WARN(
@@ -351,7 +348,6 @@ class ArmController : public rclcpp::Node{
 
                         return q;
                 }
-
 };
 
 
