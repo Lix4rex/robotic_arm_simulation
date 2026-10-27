@@ -1,1 +1,0 @@
-Warning [Utils.cc:132] [/sdf/model[@name="camera_deportee"]/link[@name="camera_deportee"]/sensor[@name="camera_deportee"]/gz_frame_id:<data-string>:L81]: XML Element[gz_frame_id], child of element[sensor], not defined in SDF. Copying[gz_frame_id] as children of [sensor].
