@@ -16,19 +16,26 @@ find_package(Eigen3 REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(ros_gz_interfaces REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(cv_bridge REQUIRED)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc)
 
 
 add_executable(arm_controller src/arm_controller.cpp)
-ament_target_dependencies(arm_controller rclcpp rclcpp_action std_msgs robot_msgs)
+ament_target_dependencies(arm_controller rclcpp rclcpp_action std_msgs std_srvs robot_msgs)
 target_link_libraries(arm_controller Eigen3::Eigen)
 
 add_executable(gripper_controller src/gripper_controller.cpp)
 ament_target_dependencies(gripper_controller rclcpp std_msgs std_srvs ros_gz_interfaces sensor_msgs)
 
 add_executable(main_controller src/main_controller.cpp)
-ament_target_dependencies(main_controller rclcpp rclcpp_action std_srvs robot_msgs)
+ament_target_dependencies(main_controller rclcpp rclcpp_action std_srvs robot_msgs geometry_msgs)
 
-install(TARGETS arm_controller gripper_controller main_controller
+add_executable(cube_detector src/cube_detector.cpp)
+ament_target_dependencies(cube_detector rclcpp sensor_msgs geometry_msgs cv_bridge)
+target_link_libraries(cube_detector ${OpenCV_LIBS} Eigen3::Eigen)
+
+install(TARGETS arm_controller gripper_controller main_controller cube_detector
   DESTINATION lib/${PROJECT_NAME})
 
 install(

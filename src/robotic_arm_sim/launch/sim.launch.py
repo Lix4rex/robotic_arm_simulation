@@ -77,6 +77,12 @@ def generate_launch_description():
         parameters=[{"cubes": cubes}]
     )
 
+    cube_detector = Node(
+        package="robotic_arm_sim",
+        executable="cube_detector",
+        parameters=[{"use_sim_time": True}]
+    )
+
     # Le plugin DetachableJoint attache les cubes a la pince des le demarrage :
     # on attend que ses topics existent, on les detache, puis on lance la simulation
     # (sinon le bras entraine les cubes avant que le detach soit pris en compte).
@@ -96,7 +102,7 @@ def generate_launch_description():
 
     delayed_actions = TimerAction(
         period=10.0,
-        actions=[bridge, arm_controller, gripper_controller, rviz],
+        actions=[bridge, arm_controller, gripper_controller, cube_detector, rviz],
     )
 
     return LaunchDescription([

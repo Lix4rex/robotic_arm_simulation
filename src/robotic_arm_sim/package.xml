@@ -25,6 +25,9 @@
   <depend>std_srvs</depend>
   <depend>ros_gz_interfaces</depend>
   <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>libopencv-dev</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

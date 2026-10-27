@@ -1,9 +1,13 @@
+#include <algorithm>
 #include <list>
+#include <set>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "robot_msgs/action/move_to_position.hpp"
 #include "std_srvs/srv/trigger.hpp"
+#include "geometry_msgs/msg/point_stamped.hpp"
 
 using namespace std::chrono_literals;
 
@@ -17,13 +21,26 @@ class MainController : public rclcpp::Node{
 
                         RCLCPP_INFO(this->get_logger(), "MainController is launching...");
 
+                        cube_order = this->declare_parameter<std::vector<std::string>>("cube_order", cube_order);
+                        check_cube_order();
+
                         move_to_position_client_ = rclcpp_action::create_client<MoveToPosition>(this, "/arm_controller/move_to_position");
 
                         close_fingers_service_client_ = this->create_client<std_srvs::srv::Trigger>("/gripper/close");
                         open_fingers_service_client_ = this->create_client<std_srvs::srv::Trigger>("/gripper/open");
 
+                        for (const auto& cube : cubes){
+                                cubes_poses[cube] = Pose3D();
+                                cube_sub_[cube] = this->create_subscription<geometry_msgs::msg::PointStamped>(
+                                        "/cube_detector/" + cube + "_cube", 10, 
+                                        [this, cube](const geometry_msgs::msg::PointStamped::SharedPtr msg){
+                                                color_sub_callback(cube, msg);
+                                        }
+                                );
 
-                        waiting_server_timer = this->create_wall_timer(500ms, std::bind(&MainController::wait_for_servers, this));
+                        }
+
+                        tick();
 
                         RCLCPP_INFO(this->get_logger(), "MainController successfuly launched");
                 }
@@ -32,7 +49,7 @@ class MainController : public rclcpp::Node{
         private:
 
 
-                enum class State { IDLE, MOVE_TO, OPEN_FINGERS, CLOSE_FINGERS, FINISH };
+                enum class State { IDLE, MOVE_TO, OPEN_FINGERS, CLOSE_FINGERS, CUBE_PLACED, WAIT_FOR_MOVE, FINISH };
 
                 struct Action{
                         State state = State::IDLE;
@@ -41,43 +58,13 @@ class MainController : public rclcpp::Node{
                         float z_target = 0.0;
                 };
 
+                int nb_cube_placed = 0;
+                float z_floor = 1.048;
+                float z_cube = 0.06;
+
                 std::list<Action> actions = {
                         {State::IDLE, 0.0, 0.0, 0.0},
-                        {State::OPEN_FINGERS, 0.0, 0.0, 0.0},
-
-                        {State::MOVE_TO, 0.8, -0.25, 1.2},
-                        {State::MOVE_TO, 0.8, -0.25, 1.045},
-                        {State::CLOSE_FINGERS, 0.0, 0.0, 0.0},
-                        {State::MOVE_TO, 0.8, -0.25, 1.3},
-
-                        {State::MOVE_TO, 0.6, 0, 1.3},
-                        {State::MOVE_TO, 0.6, 0, 1.048},
-                        {State::OPEN_FINGERS, 0.0, 0.0, 0.0},
-                        {State::MOVE_TO, 0.6, 0, 1.3},
-
-                        {State::MOVE_TO, 0.8, 0.25, 1.2},
-                        {State::MOVE_TO, 0.8, 0.25, 1.045},
-                        {State::CLOSE_FINGERS, 0.0, 0.0, 0.0},
-                        {State::MOVE_TO, 0.8, 0.25, 1.3},
-
-                        {State::MOVE_TO, 0.6, 0, 1.3},
-                        {State::MOVE_TO, 0.6, 0, 1.108},
-                        {State::OPEN_FINGERS, 0.0, 0.0, 0.0},
-                        {State::MOVE_TO, 0.6, 0, 1.3},
-
-                        {State::MOVE_TO, 0.8, 0, 1.2},
-                        {State::MOVE_TO, 0.8, 0, 1.045},
-                        {State::CLOSE_FINGERS, 0.0, 0.0, 0.0},
-                        {State::MOVE_TO, 0.8, 0, 1.3},
-
-                        {State::MOVE_TO, 0.6, 0, 1.3},
-                        {State::MOVE_TO, 0.6, 0, 1.168},
-                        {State::OPEN_FINGERS, 0.0, 0.0, 0.0},
-                        {State::MOVE_TO, 0.6, 0, 1.3},
-
-                        {State::MOVE_TO, 0.6, 0, 1.4},
-                        
-                        {State::FINISH, 0.0, 0.0, 0.0}
+                        {State::OPEN_FINGERS, 0.0, 0.0, 0.0}                        
                 };
 
                 // Tick State Machine
@@ -91,7 +78,25 @@ class MainController : public rclcpp::Node{
                                 case State::FINISH:
                                         RCLCPP_INFO(this->get_logger(), "Toutes les étapes ont été réalisées");
                                         return;
+
                                 case State::IDLE:
+                                        waiting_server_timer = this->create_wall_timer(500ms, std::bind(&MainController::wait_for_servers, this));
+                                        break;
+
+                                case State::CUBE_PLACED:
+                                        nb_cube_placed++;
+                                        moved_cube = 0;
+                                        if (nb_cube_placed >= 3){
+                                                actions.push_back({State::MOVE_TO, 0.6, 0, 1.4});
+                                                actions.push_back({State::FINISH, 0.0, 0.0, 0.0});
+                                        } else {
+                                                pick_and_place_cube();
+                                        }
+                                        tick();
+                                        break;
+
+                                case State::WAIT_FOR_MOVE:
+                                        pick_and_place_cube();
                                         tick();
                                         break;
 
@@ -111,6 +116,109 @@ class MainController : public rclcpp::Node{
                                         RCLCPP_ERROR(this->get_logger(), "Cas non défini");
                                         return;
                         }
+                }
+
+
+                // Color detection and update pick_and_place
+
+                struct Pose3D {
+                        float x = 0.0;
+                        float y = 0.0;
+                        float z = 0.0;
+                        bool ready = false;
+                };
+
+                std::vector<std::string> cubes = {"red", "green", "blue"};
+                std::map<std::string, Pose3D> cubes_poses;
+
+                int moved_cube = 0;
+
+                std::map<std::string, rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr> cube_sub_;
+                void color_sub_callback(std::string color, const geometry_msgs::msg::PointStamped::SharedPtr msg){
+                        cubes_poses[color].x = msg->point.x;
+                        cubes_poses[color].y = msg->point.y;
+                        cubes_poses[color].z = msg->point.z;
+                        if (!cubes_poses[color].ready) cubes_poses[color].ready = true;
+                }
+
+                std::vector<std::string> cube_order = {"green", "blue", "red"};
+
+                void check_cube_order(){
+                        std::set<std::string> seen;
+                        for (const auto& color : cube_order){
+                                if (std::find(cubes.begin(), cubes.end(), color) == cubes.end() || !seen.insert(color).second){
+                                        throw std::invalid_argument("cube_order invalide : couleur inconnue ou en double '" + color + "'");
+                                }
+                        }
+                        if (cube_order.size() != cubes.size()){
+                                throw std::invalid_argument("cube_order doit contenir exactement " + std::to_string(cubes.size()) + " couleurs");
+                        }
+                        std::string liste;
+                        for (const auto & c : cube_order) liste += (liste.empty() ? "" : ", ") + c;
+                        RCLCPP_INFO(this->get_logger(), "Ordre d'empilement : %s", liste.c_str());
+                }
+
+                bool pose_in_range(Pose3D *a, Pose3D *b){
+                        float epsilon = 0.05;
+                        return b->x - epsilon <= a->x && a->x <= b->x + epsilon && b->y - epsilon <= a->y && a->y <= b->y + epsilon;
+                }
+
+                void pick_and_place_cube(){
+
+                        std::string color_to_pick = cube_order[nb_cube_placed];
+                        Pose3D cube_pose = cubes_poses[color_to_pick];
+
+                        float cube_offset = 0.16f;
+                        std::list<Action> moved_cube_reverse_action;
+
+                        float max_z = cube_pose.z;
+                        std::string color_to_move = color_to_pick;
+
+                        for (std::string color : cube_order){
+                                if (color == color_to_pick) continue;
+
+                                Pose3D cube_pose_other = cubes_poses[color];
+
+                                if (cube_pose_other.z < cube_pose.z) continue;
+                                if (cube_pose_other.z < max_z) continue;
+
+                                if (pose_in_range(&cube_pose, &cube_pose_other)){
+                                        max_z = cube_pose_other.z;
+                                        color_to_move = color;
+                                        moved_cube++;
+                                }
+                        }
+
+                        if (color_to_move != color_to_pick){
+                                RCLCPP_INFO(this->get_logger(), "Il faut dépiler le cube %s\n", color_to_move.c_str());
+
+                                Pose3D cube_pose_other = cubes_poses[color_to_move];
+                                actions.push_back({State::MOVE_TO, cube_pose_other.x, cube_pose_other.y, cube_pose_other.z + 0.155f});
+                                actions.push_back({State::MOVE_TO, cube_pose_other.x, cube_pose_other.y, cube_pose_other.z});
+                                actions.push_back({State::CLOSE_FINGERS, 0.0, 0.0, 0.0});
+                                actions.push_back({State::MOVE_TO, cube_pose_other.x, cube_pose_other.y, cube_pose_other.z + 0.255f});
+                                
+                                actions.push_back({State::MOVE_TO, cube_pose_other.x, cube_pose_other.y + cube_offset, 1.3f + (moved_cube-1)*z_cube});
+                                actions.push_back({State::MOVE_TO, cube_pose_other.x, cube_pose_other.y + cube_offset, z_floor + (moved_cube-1)*z_cube});
+                                actions.push_back({State::OPEN_FINGERS, 0.0, 0.0, 0.0});
+                                actions.push_back({State::MOVE_TO, cube_pose_other.x, cube_pose_other.y + cube_offset, 1.3f + (moved_cube-1)*z_cube});
+
+                                actions.push_back({State::WAIT_FOR_MOVE, 0.0, 0.0, 0.0});
+
+                                return;
+                        }
+
+                        actions.push_back({State::MOVE_TO, cube_pose.x, cube_pose.y, cube_pose.z + 0.155f});
+                        actions.push_back({State::MOVE_TO, cube_pose.x, cube_pose.y, cube_pose.z});
+                        actions.push_back({State::CLOSE_FINGERS, 0.0, 0.0, 0.0});
+                        actions.push_back({State::MOVE_TO, cube_pose.x, cube_pose.y, cube_pose.z + 0.255f});
+                        
+                        actions.push_back({State::MOVE_TO, 0.6, 0, 1.3});
+                        actions.push_back({State::MOVE_TO, 0.6, 0, z_floor + nb_cube_placed*z_cube});
+                        actions.push_back({State::OPEN_FINGERS, 0.0, 0.0, 0.0});
+                        actions.push_back({State::MOVE_TO, 0.6, 0, 1.3});
+
+                        actions.push_back({State::CUBE_PLACED, 0.0, 0.0, 0.0});
                 }
 
 
@@ -218,6 +326,10 @@ class MainController : public rclcpp::Node{
                         if (!close_fingers_service_client_->service_is_ready()) manquants.push_back(close_fingers_service_client_->get_service_name());
                         if (!open_fingers_service_client_->service_is_ready()) manquants.push_back(open_fingers_service_client_->get_service_name());
 
+                        for (auto cube : cubes){
+                                if (!cubes_poses[cube].ready) manquants.push_back(cube);
+                        }
+
                         if (!manquants.empty()){
                                 std::string liste;
                                 for (const auto & m : manquants) liste += (liste.empty() ? "" : ", ") + m;
@@ -227,6 +339,7 @@ class MainController : public rclcpp::Node{
 
                         waiting_server_timer->cancel();
                         RCLCPP_INFO(this->get_logger(), "Tous les serveurs sont prêts : c'est parti");
+                        pick_and_place_cube();
                         tick();
                 }
 

@@ -2,6 +2,7 @@
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "std_msgs/msg/float64.hpp"
 #include "robot_msgs/action/move_to_position.hpp"
+#include "std_srvs/srv/trigger.hpp"
 
 #include <Eigen/Dense>
 #include <cmath>
@@ -22,7 +23,8 @@ class ArmController : public rclcpp::Node{
                         min_trajectory_duration_ = this->declare_parameter<double>("min_trajectory_duration", 1.0);
 
                         // Position de depart des joints dans Gazebo (joint 4 en butee haute)
-                        q_current_ << 0.0, 0.0, 0.0, -0.0698, 0.0, 0.0, 0.0;
+                        q_initial_ << 0.0, 0.0, 0.0, -0.0698, 0.0, 0.0, 0.0;
+                        q_current_ = q_initial_;
                         q_start_ = q_current_;
                         q_goal_ = q_current_;
 
@@ -63,6 +65,11 @@ class ArmController : public rclcpp::Node{
                                 std::bind(&ArmController::handle_goal, this, std::placeholders::_1, std::placeholders::_2),
                                 std::bind(&ArmController::handle_cancel, this, std::placeholders::_1),
                                 std::bind(&ArmController::handle_accepted, this, std::placeholders::_1)
+                        );
+
+                        reset_service_ = this->create_service<std_srvs::srv::Trigger>(
+                                "/arm_controller/reset",
+                                std::bind(&ArmController::handle_reset, this, std::placeholders::_1, std::placeholders::_2)
                         );
 
                         trajectory_timer_ = this->create_wall_timer(
@@ -114,6 +121,7 @@ class ArmController : public rclcpp::Node{
                 // Trajectory
                 double max_joint_velocity_;
                 double min_trajectory_duration_;
+                Eigen::Matrix<double, 7, 1> q_initial_;
                 Eigen::Matrix<double, 7, 1> q_current_;
                 Eigen::Matrix<double, 7, 1> q_start_;
                 Eigen::Matrix<double, 7, 1> q_goal_;
@@ -258,6 +266,36 @@ class ArmController : public rclcpp::Node{
                                 q(i)
                                 );
                         }
+                }
+
+                // Reset service
+                rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_service_;
+
+                // Remet l'etat interne a la position de depart, sans trajectoire, pour rester
+                // coherent avec un reset de Gazebo (qui teleporte le bras a sa pose initiale)
+                void handle_reset(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response){
+                        (void)request;
+
+                        if (active_goal_ && active_goal_->is_active()){
+                                auto result = std::make_shared<MoveToPosition::Result>();
+                                result->success = false;
+                                result->message = "Aborted by reset";
+                                active_goal_->abort(result);
+                                RCLCPP_WARN(this->get_logger(), "Active goal aborted by reset");
+                        }
+                        active_goal_.reset();
+                        trajectory_active_ = false;
+
+                        q_current_ = q_initial_;
+                        q_start_ = q_initial_;
+                        q_goal_ = q_initial_;
+
+                        // Les JointPositionController gardent leur derniere consigne : on la remet a la pose initiale
+                        publish_joint_positions(q_current_);
+
+                        RCLCPP_INFO(this->get_logger(), "ArmController reset to initial position");
+                        response->success = true;
+                        response->message = "Arm reset to initial position";
                 }
 
                 Eigen::Matrix4d T10(double alpha1){

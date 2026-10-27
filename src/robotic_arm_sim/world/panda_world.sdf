@@ -140,6 +140,12 @@
         <!--
         -->
         </sensor> 
+
+        <!-- Camera de profondeur : meme pose et meme champ de vision que la camera couleur,
+             resolution divisee par 4 (memes proportions) pour garder des images legeres -->
+        <sensor name="camera_deportee_depth" type="depth_camera"><pose>2.07 0 2.16 0 0.5176 3.1416</pose><topic>/deported_camera/depth_image</topic><gz_frame_id>camera_deportee_optical</gz_frame_id><update_rate>2</update_rate><always_on>true</always_on><visualize>false</visualize>
+        <camera><horizontal_fov>1.1519</horizontal_fov><image><width>1164</width><height>874</height><format>R_FLOAT32</format></image><clip><near>0.05</near><far>10</far></clip></camera>
+        </sensor>
       
       </link>
     </model>
@@ -221,7 +227,7 @@
     </include>
 
     <model name="blue_cube">
-      <pose>0.8 0 1.07 0 0 0</pose>
+      <pose>0.8 0.0 1.21 0 0 0</pose>
       <link name="link">
         <inertial>
           <mass>0.05</mass>
@@ -257,7 +263,7 @@
     </model>
 
     <model name="red_cube">
-      <pose>0.8 0.25 1.07 0 0 0</pose>
+      <pose>0.8 0.0 1.14 0 0 0</pose>
       <link name="link">
         <inertial>
           <mass>0.05</mass>
@@ -293,7 +299,7 @@
     </model>
 
     <model name="green_cube">
-      <pose>0.8 -0.25 1.07 0 0 0</pose>
+      <pose>0.8 0.0 1.07 0 0 0</pose>
       <link name="link">
         <inertial>
           <mass>0.05</mass>
