@@ -12,17 +12,23 @@ find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(robot_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(std_srvs REQUIRED)
+find_package(ros_gz_interfaces REQUIRED)
+find_package(sensor_msgs REQUIRED)
 
 
 add_executable(arm_controller src/arm_controller.cpp)
 ament_target_dependencies(arm_controller rclcpp std_msgs robot_msgs)
 target_link_libraries(arm_controller Eigen3::Eigen)
 
-install(TARGETS arm_controller
+add_executable(gripper_controller src/gripper_controller.cpp)
+ament_target_dependencies(gripper_controller rclcpp std_msgs std_srvs ros_gz_interfaces sensor_msgs)
+
+install(TARGETS arm_controller gripper_controller
   DESTINATION lib/${PROJECT_NAME})
 
 install(
-  DIRECTORY launch config world
+  DIRECTORY launch config world models
   DESTINATION share/${PROJECT_NAME}
 )
 

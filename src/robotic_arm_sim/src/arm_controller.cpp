@@ -1,5 +1,6 @@
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/float64.hpp"
+#include "std_msgs/msg/empty.hpp"
 #include "robot_msgs/msg/target_position.hpp"
 
 #include <Eigen/Dense>
@@ -14,6 +15,13 @@ class ArmController : public rclcpp::Node{
 
                         RCLCPP_INFO(this->get_logger(), "ArmController is launching...");
 
+                        max_joint_velocity_ = this->declare_parameter<double>("max_joint_velocity", 0.8);
+                        min_trajectory_duration_ = this->declare_parameter<double>("min_trajectory_duration", 1.0);
+
+                        // Position de depart des joints dans Gazebo (joint 4 en butee haute)
+                        q_current_ << 0.0, 0.0, 0.0, -0.0698, 0.0, 0.0, 0.0;
+                        q_start_ = q_current_;
+                        q_goal_ = q_current_;
 
                         RCLCPP_INFO(this->get_logger(), "Creating Publishers...");
 
@@ -21,7 +29,7 @@ class ArmController : public rclcpp::Node{
                                 "/model/panda/joint/panda_finger_joint1/cmd_pos", 10
                         );                        
                         panda_finger_joint2_pub_ = this->create_publisher<std_msgs::msg::Float64>(
-                                "/model/panda/joint/panda_finger_joint1/cmd_pos", 10
+                                "/model/panda/joint/panda_finger_joint2/cmd_pos", 10
                         );                        
                         panda_joint1_pub_ = this->create_publisher<std_msgs::msg::Float64>(
                                 "/model/panda/joint/panda_joint1/cmd_pos", 10
@@ -50,6 +58,14 @@ class ArmController : public rclcpp::Node{
                         target_position_sub_ = this->create_subscription<robot_msgs::msg::TargetPosition>(
                                 "/target_position", 10,
                                 std::bind(&ArmController::target_position_callback, this, std::placeholders::_1)
+                        );
+
+                        trajectory_finished_pub_ = this->create_publisher<std_msgs::msg::Empty>(
+                                "/arm_controller/trajectory_finished", 10
+                        );
+
+                        trajectory_timer_ = this->create_wall_timer(
+                                10ms, std::bind(&ArmController::trajectory_callback, this)
                         );
 
                         RCLCPP_INFO(this->get_logger(), "ArmController successfuly launched");
@@ -94,12 +110,57 @@ class ArmController : public rclcpp::Node{
                         panda_joint7_pub_->publish(msg);
                 }
 
+                // Trajectory
+                double max_joint_velocity_;
+                double min_trajectory_duration_;
+                Eigen::Matrix<double, 7, 1> q_current_;
+                Eigen::Matrix<double, 7, 1> q_start_;
+                Eigen::Matrix<double, 7, 1> q_goal_;
+                std::chrono::steady_clock::time_point trajectory_start_;
+                double trajectory_duration_ = 0.0;
+                bool trajectory_active_ = false;
+                rclcpp::TimerBase::SharedPtr trajectory_timer_;
+                rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr trajectory_finished_pub_;
+
+                // Interpolation de q_start_ vers q_goal_ avec un profil quintique :
+                // vitesse et acceleration nulles au depart et a l'arrivee, donc pas d'a-coup
+                void start_trajectory(const Eigen::Matrix<double, 7, 1>& q_goal){
+                        q_start_ = q_current_;
+                        q_goal_ = q_goal;
+
+                        // Vitesse max du profil quintique = 1.875 * deplacement / duree
+                        const double max_delta = (q_goal_ - q_start_).cwiseAbs().maxCoeff();
+                        trajectory_duration_ = std::max(1.875 * max_delta / max_joint_velocity_, min_trajectory_duration_);
+                        trajectory_start_ = std::chrono::steady_clock::now();
+                        trajectory_active_ = true;
+
+                        RCLCPP_INFO(this->get_logger(), "Trajectory started (%.2f s)", trajectory_duration_);
+                }
+
+                void trajectory_callback(){
+                        if (!trajectory_active_) return;
+
+                        const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - trajectory_start_).count();
+                        const double tau = std::min(elapsed / trajectory_duration_, 1.0);
+                        const double s = tau * tau * tau * (10.0 - 15.0 * tau + 6.0 * tau * tau);
+
+                        q_current_ = q_start_ + s * (q_goal_ - q_start_);
+                        publish_joint_positions(q_current_);
+
+                        if (tau >= 1.0){
+                                trajectory_active_ = false;
+                                RCLCPP_INFO(this->get_logger(), "Trajectory finished");
+                                trajectory_finished_pub_->publish(std_msgs::msg::Empty());
+                        }
+                }
+
                 // Command topic
                 rclcpp::Subscription<robot_msgs::msg::TargetPosition>::SharedPtr target_position_sub_;
                 void target_position_callback(const robot_msgs::msg::TargetPosition::SharedPtr msg){
+                        // Cible dans le monde -> repere de la base (pose du panda dans panda_world.sdf)
                         double x_target = msg->x_target - 0.2;
                         double y_target = msg->y_target;
-                        double z_target = msg->z_target - 1.52;
+                        double z_target = msg->z_target - 1.025;
 
                         Eigen::Vector3d target(
                                 x_target,
@@ -119,7 +180,7 @@ class ArmController : public rclcpp::Node{
 
                         Eigen::Matrix<double, 7, 1> q = inverse_kinematics(target, q0);
 
-                        publish_joint_positions(q);
+                        start_trajectory(q);
 
                         RCLCPP_INFO(
                                 this->get_logger(),
@@ -220,18 +281,28 @@ class ArmController : public rclcpp::Node{
                 }
 
                 Eigen::Matrix4d T87(){
+                        const double c = std::cos(-M_PI / 4.0);
+                        const double s = std::sin(-M_PI / 4.0);
                         Eigen::Matrix4d T;
+                        T << c, -s, 0, 0,
+                        s,  c, 0, 0,
+                        0,  0, 1, 0.107,
+                        0,  0, 0, 1;
+                        return T;
+                }
 
+                // Point de saisie entre les doigts (TCP), 0.1034 m sous panda_hand
+                Eigen::Matrix4d T_tcp(){
+                        Eigen::Matrix4d T;
                         T << 1, 0, 0, 0,
-                                0, 1, 0, 0,
-                                0, 0, 1, 0.107,
-                                0, 0, 0, 1;
-
+                        0, 1, 0, 0,
+                        0, 0, 1, 0.1034,
+                        0, 0, 0, 1;
                         return T;
                 }
 
                 Eigen::Matrix4d forward_kinematics_matrix(const Eigen::Matrix<double, 7, 1>& q){
-                        return T10(q(0)) * T21(q(1)) * T32(q(2)) * T43(q(3)) * T54(q(4)) * T65(q(5)) * T76(q(6))* T87();
+                        return T10(q(0)) * T21(q(1)) * T32(q(2)) * T43(q(3)) * T54(q(4)) * T65(q(5)) * T76(q(6))* T87() * T_tcp();
                 }
 
                 Eigen::Vector3d orientation_error(const Eigen::Matrix3d& R_current, const Eigen::Matrix3d& R_target){

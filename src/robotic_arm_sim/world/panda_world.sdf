@@ -14,8 +14,17 @@
       name="ignition::gazebo::systems::UserCommands">
     </plugin>
     <plugin
+      filename="gz-sim-contact-system"
+      name="gz::sim::systems::Contact">
+    </plugin>
+    <plugin
       filename="ignition-gazebo-scene-broadcaster-system"
       name="ignition::gazebo::systems::SceneBroadcaster">
+    </plugin>
+    <plugin
+      filename="gz-sim-sensors-system"
+      name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
     </plugin>
 
     <gui fullscreen="0">
@@ -58,29 +67,6 @@
 
       </plugin>
 
-      <!-- World statistics -->
-      <plugin filename="WorldStats" name="World stats">
-        <ignition-gui>
-          <title>World stats</title>
-          <property type="bool" key="showTitleBar">false</property>
-          <property type="bool" key="resizable">false</property>
-          <property type="double" key="height">110</property>
-          <property type="double" key="width">290</property>
-          <property type="double" key="z">1</property>
-
-          <property type="string" key="state">floating</property>
-          <anchors target="3D View">
-            <line own="right" target="right"/>
-            <line own="bottom" target="bottom"/>
-          </anchors>
-        </ignition-gui>
-
-        <sim_time>true</sim_time>
-        <real_time>true</real_time>
-        <real_time_factor>true</real_time_factor>
-        <iterations>true</iterations>
-      </plugin>
-
       <plugin filename="JointPositionController" name="JointPositionController">
         <ignition-gui>
           <property type="double" key="height">600</property>
@@ -109,6 +95,54 @@
       </attenuation>
       <direction>-0.5 0.1 -0.9</direction>
     </light>
+
+
+
+    <model name="camera_deportee">
+      <static>true</static>
+      <pose>0 0 0 0 0 0</pose>
+      <link name="camera_deportee">
+
+        <visual name="mat"><pose>2.15 0 1.10 0 0 0</pose><geometry><box><size>0.04 0.04 2.20</size></box></geometry><material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.95 0.95 0.95 1</diffuse><specular>0.1 0.1 0.1 1</specular></material></visual>
+        <visual name="bras"><pose>2.115 0 2.185 0 0 0</pose><geometry><box><size>0.07 0.03 0.02</size></box></geometry><material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.6 0.6 0.6 1</diffuse><specular>0.1 0.1 0.1 1</specular></material></visual>
+        <visual name="cam_boitier"><pose>2.07 0 2.16 0 0.5176 3.1416</pose><geometry><box><size>0.025 0.03 0.03</size></box></geometry><material><ambient>0.1 0.1 0.1 1</ambient><diffuse>0.1 0.1 0.1 1</diffuse><specular>0.2 0.2 0.2 1</specular></material></visual>
+        <visual name="cam_objectif"><pose>2.0548 0 2.1513 0 2.0884 3.1416</pose><geometry><cylinder><radius>0.008</radius><length>0.01</length></cylinder></geometry><material><ambient>0.05 0.05 0.2 1</ambient><diffuse>0.05 0.05 0.2 1</diffuse><specular>0.5 0.5 0.5 1</specular></material></visual>
+        <sensor name="camera_deportee" type="camera"><pose>2.07 0 2.16 0 0.5176 3.1416</pose><topic>/deported_camera/image</topic><gz_frame_id>camera_deportee_optical</gz_frame_id><update_rate>2</update_rate><always_on>true</always_on><visualize>false</visualize>
+        <!--
+        -->
+        <camera><horizontal_fov>1.1519</horizontal_fov><image><width>4656</width><height>3496</height><format>R8G8B8</format></image><clip><near>0.05</near><far>10</far></clip><noise><type>gaussian</type><mean>0</mean><stddev>0.007</stddev></noise></camera>
+        <!-- IMX519, 16 Mpx (66°) https://www.lextronic.fr/camera-noir-blanc-16-mpx-imx519-b0386-pour-raspberry-pi-65084.html
+        -->
+        <!-- Pi Camera Module 3 Wide, 12 Mpx (102°)
+        <camera><horizontal_fov>1.7802</horizontal_fov><image><width>4608</width><height>2592</height><format>R8G8B8</format></image><clip><near>0.05</near><far>10</far></clip><noise><type>gaussian</type><mean>0</mean><stddev>0.007</stddev></noise></camera>
+        -->
+        <!-- Pi Camera Module 3 standard, 12 Mpx (66°)
+        <camera><horizontal_fov>1.1519</horizontal_fov><image><width>4608</width><height>2592</height><format>R8G8B8</format></image><clip><near>0.05</near><far>10</far></clip><noise><type>gaussian</type><mean>0</mean><stddev>0.007</stddev></noise></camera>
+        -->
+        <!-- HQ M12 + objectif 4 mm, 12 Mpx (76,3°) https://shop.pimoroni.com/en-eu/products/raspberry-pi-high-quality-camera-m12-mount?variant=40448403275859 (Il faut acheter à part un objectif M12 d’environ 4 mm pour capteur 1/2,3 : https://thepihut.com/collections/raspberry-pi-camera/products/m12-lens-75-degree-fov-with-raspberry-pi-hq-camera-adapter)
+        <camera><horizontal_fov>1.3321</horizontal_fov><image><width>4056</width><height>3040</height><format>R8G8B8</format></image><clip><near>0.05</near><far>10</far></clip><noise><type>gaussian</type><mean>0</mean><stddev>0.007</stddev></noise></camera> 
+        -->
+        <!-- IMX219, 8 Mpx, objectif standard (62,2°) https://www.lextronic.fr/camera-n-b-pi-noir-v2-8-mp-30552.html
+        <camera><horizontal_fov>1.0856</horizontal_fov><image><width>3280</width><height>2464</height><format>R8G8B8</format></image><clip><near>0.05</near><far>10</far></clip><noise><type>gaussian</type><mean>0</mean><stddev>0.007</stddev></noise></camera>
+        -->
+        <!-- OV5647, 5 Mpx + objectif 4 mm livré (48,8°) https://www.lextronic.fr/camera-arducam-5-mp-ov5647-b0031-78207.html
+        <camera><horizontal_fov>0.8517</horizontal_fov><image><width>2592</width><height>1944</height><format>R8G8B8</format></image><clip><near>0.05</near><far>10</far></clip><noise><type>gaussian</type><mean>0</mean><stddev>0.007</stddev></noise></camera>
+        -->
+        <!-- OV5647, 5 Mpx + objectif 2,8 mm (65,9°) https://www.lextronic.fr/objectif-2-8mm-arducam-ln013-78188.html
+        <camera><horizontal_fov>1.1499</horizontal_fov><image><width>2592</width><height>1944</height><format>R8G8B8</format></image><clip><near>0.05</near><far>10</far></clip><noise><type>gaussian</type><mean>0</mean><stddev>0.007</stddev></noise></camera>
+        -->
+        <!-- OV5647, 5 Mpx + objectif 2,1 mm (81,7°) https://www.lextronic.fr/objectif-camera-arducam-ln005-78191.html
+        <camera><horizontal_fov>1.4251</horizontal_fov><image><width>2592</width><height>1944</height><format>R8G8B8</format></image><clip><near>0.05</near><far>10</far></clip><noise><type>gaussian</type><mean>0</mean><stddev>0.007</stddev></noise></camera>
+        -->
+        <!-- Webcam 1080p générique (70°)
+        <camera><horizontal_fov>1.2217</horizontal_fov><image><width>1920</width><height>1080</height><format>R8G8B8</format></image><clip><near>0.05</near><far>10</far></clip><noise><type>gaussian</type><mean>0</mean><stddev>0.007</stddev></noise></camera>
+        -->
+        <!--
+        -->
+        </sensor> 
+      
+      </link>
+    </model>
 
     <model name="ground_plane">
       <static>true</static>
@@ -139,10 +173,35 @@
 
     <include>
       <name>panda</name>
-      <uri>
-        https://fuel.ignitionrobotics.org/1.0/OpenRobotics/models/Panda with Ignition position controller model
-      </uri>
+      <!-- Copie locale (models/panda) : bras commande en vitesse pour plus de precision -->
+      <uri>model://panda</uri>
       <pose>0.2 0 1.025 0 0 0</pose>
+      <!-- Saisie "magique" : liaison fixe panda_hand <-> cube, creee/supprimee via topics.
+           Le plugin attache le cube des le demarrage, d'ou le detach envoye dans sim.launch.py. -->
+      <plugin filename="gz-sim-detachable-joint-system" name="gz::sim::systems::DetachableJoint">
+        <parent_link>panda_hand</parent_link>
+        <child_model>blue_cube</child_model>
+        <child_link>link</child_link>
+        <attach_topic>/panda/blue_cube/attach</attach_topic>
+        <detach_topic>/panda/blue_cube/detach</detach_topic>
+        <output_topic>/panda/blue_cube/state</output_topic>
+      </plugin>
+      <plugin filename="gz-sim-detachable-joint-system" name="gz::sim::systems::DetachableJoint">
+        <parent_link>panda_hand</parent_link>
+        <child_model>red_cube</child_model>
+        <child_link>link</child_link>
+        <attach_topic>/panda/red_cube/attach</attach_topic>
+        <detach_topic>/panda/red_cube/detach</detach_topic>
+        <output_topic>/panda/red_cube/state</output_topic>
+      </plugin>
+      <plugin filename="gz-sim-detachable-joint-system" name="gz::sim::systems::DetachableJoint">
+        <parent_link>panda_hand</parent_link>
+        <child_model>green_cube</child_model>
+        <child_link>link</child_link>
+        <attach_topic>/panda/green_cube/attach</attach_topic>
+        <detach_topic>/panda/green_cube/detach</detach_topic>
+        <output_topic>/panda/green_cube/state</output_topic>
+      </plugin>
     </include>
 
     <include>
@@ -161,35 +220,111 @@
       <pose>0.794 0 0 0 0 1.5708</pose>
     </include>
 
-    <model name="cube">
-      <static>true</static>
-
-      <pose>1.0 0 1.575 0 0 0</pose>
-
+    <model name="blue_cube">
+      <pose>0.8 0 1.07 0 0 0</pose>
       <link name="link">
-
+        <inertial>
+          <mass>0.05</mass>
+          <inertia>
+            <ixx>3e-05</ixx><iyy>3e-05</iyy><izz>3e-05</izz>
+            <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+          </inertia>
+        </inertial>
         <collision name="collision">
-          <geometry>
-            <box>
-              <size>0.1 0.1 0.1</size>
-            </box>
-          </geometry>
+          <geometry><box><size>0.06 0.06 0.06</size></box></geometry>
+          <surface>
+            <friction><ode><mu>2.0</mu><mu2>2.0</mu2></ode></friction>
+            <contact><ode><kp>1e5</kp><kd>1</kd><min_depth>0.001</min_depth></ode></contact>
+          </surface>
         </collision>
-
+        <sensor name="contact" type="contact">
+          <contact>
+            <collision>collision</collision>
+            <topic>/panda/blue_cube/contacts</topic>
+          </contact>
+          <update_rate>50</update_rate>
+          <always_on>true</always_on>
+        </sensor>
         <visual name="visual">
-          <geometry>
-            <box>
-              <size>0.1 0.1 0.1</size>
-            </box>
-          </geometry>
-
+          <geometry><box><size>0.06 0.06 0.06</size></box></geometry>
           <material>
-            <ambient>0.8 0.2 0.2 1</ambient>
-            <diffuse>0.8 0.2 0.2 1</diffuse>
-            <specular>0.2 0.2 0.2 1</specular>
+            <ambient>0 0 0.6 1</ambient>
+            <diffuse>0 0 1 1</diffuse>
+            <specular>0.5 0.5 0.5 1</specular>
           </material>
         </visual>
+      </link>
+    </model>
 
+    <model name="red_cube">
+      <pose>0.8 0.25 1.07 0 0 0</pose>
+      <link name="link">
+        <inertial>
+          <mass>0.05</mass>
+          <inertia>
+            <ixx>3e-05</ixx><iyy>3e-05</iyy><izz>3e-05</izz>
+            <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+          </inertia>
+        </inertial>
+        <collision name="collision">
+          <geometry><box><size>0.06 0.06 0.06</size></box></geometry>
+          <surface>
+            <friction><ode><mu>2.0</mu><mu2>2.0</mu2></ode></friction>
+            <contact><ode><kp>1e5</kp><kd>1</kd><min_depth>0.001</min_depth></ode></contact>
+          </surface>
+        </collision>
+        <sensor name="contact" type="contact">
+          <contact>
+            <collision>collision</collision>
+            <topic>/panda/red_cube/contacts</topic>
+          </contact>
+          <update_rate>50</update_rate>
+          <always_on>true</always_on>
+        </sensor>
+        <visual name="visual">
+          <geometry><box><size>0.06 0.06 0.06</size></box></geometry>
+          <material>
+            <ambient>0.6 0 0 1</ambient>
+            <diffuse>1 0 0 1</diffuse>
+            <specular>0.5 0.5 0.5 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="green_cube">
+      <pose>0.8 -0.25 1.07 0 0 0</pose>
+      <link name="link">
+        <inertial>
+          <mass>0.05</mass>
+          <inertia>
+            <ixx>3e-05</ixx><iyy>3e-05</iyy><izz>3e-05</izz>
+            <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+          </inertia>
+        </inertial>
+        <collision name="collision">
+          <geometry><box><size>0.06 0.06 0.06</size></box></geometry>
+          <surface>
+            <friction><ode><mu>2.0</mu><mu2>2.0</mu2></ode></friction>
+            <contact><ode><kp>1e5</kp><kd>1</kd><min_depth>0.001</min_depth></ode></contact>
+          </surface>
+        </collision>
+        <sensor name="contact" type="contact">
+          <contact>
+            <collision>collision</collision>
+            <topic>/panda/green_cube/contacts</topic>
+          </contact>
+          <update_rate>50</update_rate>
+          <always_on>true</always_on>
+        </sensor>
+        <visual name="visual">
+          <geometry><box><size>0.06 0.06 0.06</size></box></geometry>
+          <material>
+            <ambient>0 0.6 0 1</ambient>
+            <diffuse>0 1 0 1</diffuse>
+            <specular>0.5 0.5 0.5 1</specular>
+          </material>
+        </visual>
       </link>
     </model>
 

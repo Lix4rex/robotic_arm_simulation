@@ -125,4 +125,6 @@ RUN PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info[0]}.{sys.
  && tgt="/opt/ros/${ROS_DISTRO}/lib/python${PYTHON_VERSION}/site-packages" \
  && [ -d "$tgt" ] && ln -s "$tgt" "/opt/ros/${ROS_DISTRO}/lib/ros_site_packages"
 
+RUN echo "chmod 0700 /run/user/1000/" >> /home/$USERNAME/.bashrc
+
 ENV AMENT_CPPCHECK_ALLOW_SLOW_VERSIONS=1

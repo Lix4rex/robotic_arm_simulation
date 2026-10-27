@@ -1,3 +1,5 @@
 arm_controller:
   ros__parameters:
     test: true
+    max_joint_velocity: 0.8       # rad/s, vitesse max d une articulation pendant une trajectoire
+    min_trajectory_duration: 1.0  # s
