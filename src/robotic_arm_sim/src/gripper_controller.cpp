@@ -89,6 +89,11 @@ class GripperController : public rclcpp::Node{
                                 std::bind(&GripperController::open_callback, this, std::placeholders::_1, std::placeholders::_2),
                                 rclcpp::ServicesQoS(), services_group_
                         );
+                        reset_srv_ = this->create_service<std_srvs::srv::Trigger>(
+                                "/gripper/reset",
+                                std::bind(&GripperController::reset_callback, this, std::placeholders::_1, std::placeholders::_2),
+                                rclcpp::ServicesQoS(), services_group_
+                        );
 
                         RCLCPP_INFO(this->get_logger(), "GripperController successfuly launched");
                 }
@@ -124,6 +129,7 @@ class GripperController : public rclcpp::Node{
                 rclcpp::CallbackGroup::SharedPtr services_group_;
                 rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr close_srv_;
                 rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr open_srv_;
+                rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_srv_;
 
                 std::mutex mutex_;
                 std::map<std::string, FingerContacts> last_contacts_;
@@ -281,6 +287,27 @@ class GripperController : public rclcpp::Node{
 
                         response->success = true;
                         response->message = released.empty() ? "Gripper opened" : released + " released";
+                }
+
+                // Au reset de Gazebo, le plugin DetachableJoint est recree et re-attache tous les cubes
+                // a la main (comme au demarrage) : on les detache et on repart d'un etat vide
+                void reset_callback(
+                        const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+                        std::shared_ptr<std_srvs::srv::Trigger::Response> response){
+
+                        for (const auto& cube : cubes_){
+                                detach_pubs_[cube]->publish(std_msgs::msg::Empty());
+                        }
+                        publish_fingers(open_position_);
+                        {
+                                std::lock_guard<std::mutex> lock(mutex_);
+                                attached_cubes_.clear();
+                                last_contacts_.clear();
+                        }
+
+                        RCLCPP_INFO(this->get_logger(), "GripperController reset");
+                        response->success = true;
+                        response->message = "Gripper reset";
                 }
 };
 

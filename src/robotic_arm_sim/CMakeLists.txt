@@ -22,7 +22,7 @@ find_package(OpenCV REQUIRED COMPONENTS core imgproc)
 
 
 add_executable(arm_controller src/arm_controller.cpp)
-ament_target_dependencies(arm_controller rclcpp rclcpp_action std_msgs std_srvs robot_msgs)
+ament_target_dependencies(arm_controller rclcpp rclcpp_action std_msgs std_srvs ros_gz_interfaces robot_msgs)
 target_link_libraries(arm_controller Eigen3::Eigen)
 
 add_executable(gripper_controller src/gripper_controller.cpp)

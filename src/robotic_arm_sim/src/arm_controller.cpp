@@ -3,9 +3,12 @@
 #include "std_msgs/msg/float64.hpp"
 #include "robot_msgs/action/move_to_position.hpp"
 #include "std_srvs/srv/trigger.hpp"
+#include "ros_gz_interfaces/srv/set_entity_pose.hpp"
 
 #include <Eigen/Dense>
 #include <cmath>
+#include <numeric>
+#include <random>
 
 using namespace std::chrono_literals;
 
@@ -21,6 +24,18 @@ class ArmController : public rclcpp::Node{
 
                         max_joint_velocity_ = this->declare_parameter<double>("max_joint_velocity", 0.8);
                         min_trajectory_duration_ = this->declare_parameter<double>("min_trajectory_duration", 1.0);
+                        reset_cubes_ = this->declare_parameter<std::vector<std::string>>(
+                                "reset_cubes", {"blue_cube", "red_cube", "green_cube"}
+                        );
+                        reset_area_x_ = this->declare_parameter<std::vector<double>>("reset_area_x", {0.35, 1.14});
+                        reset_area_y_ = this->declare_parameter<std::vector<double>>("reset_area_y", {-0.6, 0.6});
+                        reset_robot_xy_ = this->declare_parameter<std::vector<double>>("reset_robot_xy", {0.2, 0.0});
+                        reset_reach_ = this->declare_parameter<std::vector<double>>("reset_reach", {0.3, 0.8});
+                        reset_exclusion_zones_ = this->declare_parameter<std::vector<double>>("reset_exclusion_zones", {0.8, 0.0, 0.15});
+                        reset_base_z_ = this->declare_parameter<double>("reset_base_z", 1.07);
+                        cube_stack_step_ = this->declare_parameter<double>("cube_stack_step", 0.07);
+                        reset_min_spacing_ = this->declare_parameter<double>("reset_min_spacing", 0.12);
+                        reset_stack_probability_ = this->declare_parameter<double>("reset_stack_probability", 0.4);
 
                         // Position de depart des joints dans Gazebo (joint 4 en butee haute)
                         q_initial_ << 0.0, 0.0, 0.0, -0.0698, 0.0, 0.0, 0.0;
@@ -71,6 +86,8 @@ class ArmController : public rclcpp::Node{
                                 "/arm_controller/reset",
                                 std::bind(&ArmController::handle_reset, this, std::placeholders::_1, std::placeholders::_2)
                         );
+                        set_pose_client_ = this->create_client<ros_gz_interfaces::srv::SetEntityPose>("/world/panda_world/set_pose");
+                        gripper_reset_client_ = this->create_client<std_srvs::srv::Trigger>("/gripper/reset");
 
                         trajectory_timer_ = this->create_wall_timer(
                                 10ms, std::bind(&ArmController::trajectory_callback, this)
@@ -156,7 +173,11 @@ class ArmController : public rclcpp::Node{
                         publish_joint_positions(q_current_);
 
                         if (!active_goal_) {
-                                if (tau >= 1.0) trajectory_active_ = false;
+                                if (tau >= 1.0){
+                                        trajectory_active_ = false;
+                                        // Retour a la pose initiale du reset termine : on replace les cubes
+                                        if (reset_request_header_) reset_cubes();
+                                }
                                 return;
                         }
 
@@ -251,51 +272,6 @@ class ArmController : public rclcpp::Node{
 
                         active_goal_ = goal_handle;
                         start_trajectory(q);
-
-                        RCLCPP_INFO(
-                                this->get_logger(),
-                                "Solution IK:"
-                        );
-
-                        for (int i = 0; i < 7; i++)
-                        {
-                                RCLCPP_INFO(
-                                this->get_logger(),
-                                "q%d = %f",
-                                i + 1,
-                                q(i)
-                                );
-                        }
-                }
-
-                // Reset service
-                rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_service_;
-
-                // Remet l'etat interne a la position de depart, sans trajectoire, pour rester
-                // coherent avec un reset de Gazebo (qui teleporte le bras a sa pose initiale)
-                void handle_reset(const std::shared_ptr<std_srvs::srv::Trigger::Request> request, std::shared_ptr<std_srvs::srv::Trigger::Response> response){
-                        (void)request;
-
-                        if (active_goal_ && active_goal_->is_active()){
-                                auto result = std::make_shared<MoveToPosition::Result>();
-                                result->success = false;
-                                result->message = "Aborted by reset";
-                                active_goal_->abort(result);
-                                RCLCPP_WARN(this->get_logger(), "Active goal aborted by reset");
-                        }
-                        active_goal_.reset();
-                        trajectory_active_ = false;
-
-                        q_current_ = q_initial_;
-                        q_start_ = q_initial_;
-                        q_goal_ = q_initial_;
-
-                        // Les JointPositionController gardent leur derniere consigne : on la remet a la pose initiale
-                        publish_joint_positions(q_current_);
-
-                        RCLCPP_INFO(this->get_logger(), "ArmController reset to initial position");
-                        response->success = true;
-                        response->message = "Arm reset to initial position";
                 }
 
                 Eigen::Matrix4d T10(double alpha1){
@@ -520,6 +496,169 @@ class ArmController : public rclcpp::Node{
 
                         converged = false;
                         return q;
+                }
+                
+
+                // Reset service
+                using Trigger = std_srvs::srv::Trigger;
+                using SetEntityPose = ros_gz_interfaces::srv::SetEntityPose;
+
+                rclcpp::Service<Trigger>::SharedPtr reset_service_;
+                rclcpp::Client<Trigger>::SharedPtr gripper_reset_client_;
+                rclcpp::Client<SetEntityPose>::SharedPtr set_pose_client_;
+                std::shared_ptr<rmw_request_id_t> reset_request_header_;
+                std::vector<std::string> reset_cubes_;
+                std::vector<double> reset_area_x_;  // [min, max] de la zone de depot
+                std::vector<double> reset_area_y_;
+                std::vector<double> reset_robot_xy_;        // (x, y) de la base du robot
+                std::vector<double> reset_reach_;           // [min, max] distance horizontale a la base du robot
+                std::vector<double> reset_exclusion_zones_; // x, y, rayon par zone interdite (zone de depot...)
+                double reset_base_z_;               // z du centre d'un cube pose sur la table
+                double cube_stack_step_;            // ecart en z entre deux cubes empiles (taille + marge)
+                double reset_min_spacing_;          // distance min entre deux piles
+                double reset_stack_probability_;    // proba de poser un cube sur une pile existante
+                std::mt19937 rng_{std::random_device{}()};
+                size_t pending_cube_poses_ = 0;
+                bool cube_pose_failed_ = false;
+
+                // Reset de la scene sans reset Gazebo : un reset Gazebo recree les plugins sans
+                // Reset (DetachableJoint re-attache les cubes, les capteurs de contact ne publient plus).
+                // Chaine : pince (detach + ouverture) -> retour du bras a la pose initiale -> cubes replaces.
+                // Executor single-thread : on ne peut pas attendre les services dans le callback,
+                // la reponse est donc envoyee plus tard (send_response) a la fin de la chaine.
+                void handle_reset(const std::shared_ptr<rmw_request_id_t> request_header, const std::shared_ptr<Trigger::Request> request){
+                        (void)request;
+
+                        if (reset_request_header_){
+                                send_reset_response(request_header, false, "Reset already in progress");
+                                return;
+                        }
+                        if (!gripper_reset_client_->service_is_ready() || !set_pose_client_->service_is_ready()){
+                                send_reset_response(request_header, false, "Gripper reset or Gazebo set_pose service not available");
+                                return;
+                        }
+                        reset_request_header_ = request_header;
+
+                        stop_motion("Aborted by reset");
+
+                        RCLCPP_INFO(this->get_logger(), "Resetting gripper...");
+                        gripper_reset_client_->async_send_request(
+                                std::make_shared<Trigger::Request>(),
+                                std::bind(&ArmController::gripper_reset_callback, this, std::placeholders::_1)
+                        );
+                }
+
+                void gripper_reset_callback(rclcpp::Client<Trigger>::SharedFuture future){
+                        const auto response = future.get();
+                        if (!response->success){
+                                finish_reset(false, "Gripper reset failed : " + response->message);
+                                return;
+                        }
+
+                        // La suite (reset_cubes) est lancee par trajectory_callback a la fin du mouvement
+                        RCLCPP_INFO(this->get_logger(), "Moving arm back to initial position...");
+                        start_trajectory(q_initial_);
+                }
+
+                // Position atteignable par le bras, hors de son socle et hors des zones interdites
+                bool is_reset_position_valid(double x, double y){
+                        double dist_robot = std::hypot(x - reset_robot_xy_[0], y - reset_robot_xy_[1]);
+                        if (dist_robot < reset_reach_[0] || dist_robot > reset_reach_[1]) return false;
+
+                        for (size_t k = 0; k + 2 < reset_exclusion_zones_.size(); k += 3){
+                                if (std::hypot(x - reset_exclusion_zones_[k], y - reset_exclusion_zones_[k + 1]) < reset_exclusion_zones_[k + 2]) return false;
+                        }
+                        return true;
+                }
+
+                void reset_cubes(){
+                        RCLCPP_INFO(this->get_logger(), "Moving cubes to random positions...");
+                        pending_cube_poses_ = reset_cubes_.size();
+                        cube_pose_failed_ = false;
+
+                        // Tirage aleatoire : chaque cube est pose soit sur la table a une position (x, y)
+                        // libre, soit au sommet d'une pile existante. L'ordre est melange pour varier les piles.
+                        struct Pile { double x, y; int height; };
+                        std::vector<Pile> piles;
+                        std::uniform_real_distribution<double> dist_x(reset_area_x_[0], reset_area_x_[1]);
+                        std::uniform_real_distribution<double> dist_y(reset_area_y_[0], reset_area_y_[1]);
+                        std::bernoulli_distribution stack_dist(reset_stack_probability_);
+
+                        std::vector<size_t> order(reset_cubes_.size());
+                        std::iota(order.begin(), order.end(), 0);
+                        std::shuffle(order.begin(), order.end(), rng_);
+
+                        for (size_t i : order){
+                                int pile_idx = -1;
+                                if (!piles.empty() && stack_dist(rng_)){
+                                        pile_idx = std::uniform_int_distribution<int>(0, piles.size() - 1)(rng_);
+                                }
+                                else {
+                                        // Cherche une position assez loin des piles existantes
+                                        for (int attempt = 0; attempt < 100 && pile_idx < 0; attempt++){
+                                                double x = dist_x(rng_), y = dist_y(rng_);
+                                                bool free = is_reset_position_valid(x, y) && std::all_of(piles.begin(), piles.end(), [&](const Pile& p){
+                                                        return std::hypot(p.x - x, p.y - y) >= reset_min_spacing_;
+                                                });
+                                                if (free){
+                                                        piles.push_back({x, y, 0});
+                                                        pile_idx = piles.size() - 1;
+                                                }
+                                        }
+                                        // Pas de place libre : on empile sur une pile au hasard
+                                        if (pile_idx < 0) pile_idx = std::uniform_int_distribution<int>(0, piles.size() - 1)(rng_);
+                                }
+                                Pile& pile = piles[pile_idx];
+
+                                auto request = std::make_shared<SetEntityPose::Request>();
+                                request->entity.name = reset_cubes_[i];
+                                request->entity.type = ros_gz_interfaces::msg::Entity::MODEL;
+                                request->pose.position.x = pile.x;
+                                request->pose.position.y = pile.y;
+                                request->pose.position.z = reset_base_z_ + cube_stack_step_ * pile.height++;
+                                request->pose.orientation.w = 1.0;
+
+                                const std::string cube = reset_cubes_[i];
+                                set_pose_client_->async_send_request(request,
+                                        [this, cube](rclcpp::Client<SetEntityPose>::SharedFuture future){
+                                                if (!future.get()->success){
+                                                        RCLCPP_ERROR(this->get_logger(), "set_pose failed for %s", cube.c_str());
+                                                        cube_pose_failed_ = true;
+                                                }
+                                                if (--pending_cube_poses_ > 0) return;
+
+                                                if (cube_pose_failed_) finish_reset(false, "Failed to move some cubes back");
+                                                else finish_reset(true, "Gripper, arm and cubes reset");
+                                        }
+                                );
+                        }
+                }
+
+                void finish_reset(bool success, const std::string& message){
+                        if (success) RCLCPP_INFO(this->get_logger(), "%s", message.c_str());
+                        else RCLCPP_ERROR(this->get_logger(), "%s", message.c_str());
+                        send_reset_response(reset_request_header_, success, message);
+                        reset_request_header_.reset();
+                }
+
+                void send_reset_response(const std::shared_ptr<rmw_request_id_t>& request_header, bool success, const std::string& message){
+                        Trigger::Response response;
+                        response.success = success;
+                        response.message = message;
+                        reset_service_->send_response(*request_header, response);
+                }
+
+                // Arrete la trajectoire en cours et abandonne le goal actif
+                void stop_motion(const std::string& reason){
+                        if (active_goal_ && active_goal_->is_active()){
+                                auto result = std::make_shared<MoveToPosition::Result>();
+                                result->success = false;
+                                result->message = reason;
+                                active_goal_->abort(result);
+                                RCLCPP_WARN(this->get_logger(), "Active goal aborted : %s", reason.c_str());
+                        }
+                        active_goal_.reset();
+                        trajectory_active_ = false;
                 }
 };
 

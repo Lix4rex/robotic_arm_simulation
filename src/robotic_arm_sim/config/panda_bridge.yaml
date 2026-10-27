@@ -141,3 +141,9 @@
   ros_type_name: sensor_msgs/msg/JointState
   gz_type_name: gz.msgs.Model
   direction: GZ_TO_ROS
+
+# Deplacement d'entites (utilise par /arm_controller/reset pour replacer les cubes)
+- service_name: /world/panda_world/set_pose
+  ros_type_name: ros_gz_interfaces/srv/SetEntityPose
+  gz_req_type_name: gz.msgs.Pose
+  gz_rep_type_name: gz.msgs.Boolean
