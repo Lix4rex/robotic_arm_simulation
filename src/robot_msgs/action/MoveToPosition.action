@@ -1,0 +1,11 @@
+# Goal : position cible du TCP dans le repere monde
+float64 x_target
+float64 y_target
+float64 z_target
+---
+# Result
+bool success
+string message
+---
+# Feedback : avancement de la trajectoire (0.0 -> 1.0)
+float64 progress

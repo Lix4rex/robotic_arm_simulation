@@ -1,12 +1,15 @@
 #include "rclcpp/rclcpp.hpp"
+#include "rclcpp_action/rclcpp_action.hpp"
 #include "std_msgs/msg/float64.hpp"
-#include "std_msgs/msg/empty.hpp"
-#include "robot_msgs/msg/target_position.hpp"
+#include "robot_msgs/action/move_to_position.hpp"
 
 #include <Eigen/Dense>
 #include <cmath>
 
 using namespace std::chrono_literals;
+
+using MoveToPosition = robot_msgs::action::MoveToPosition;
+using GoalHandleMoveToPosition = rclcpp_action::ServerGoalHandle<MoveToPosition>;
 
 class ArmController : public rclcpp::Node{
 
@@ -55,13 +58,11 @@ class ArmController : public rclcpp::Node{
 
                         RCLCPP_INFO(this->get_logger(), "Publishers successfuly created");
 
-                        target_position_sub_ = this->create_subscription<robot_msgs::msg::TargetPosition>(
-                                "/target_position", 10,
-                                std::bind(&ArmController::target_position_callback, this, std::placeholders::_1)
-                        );
-
-                        trajectory_finished_pub_ = this->create_publisher<std_msgs::msg::Empty>(
-                                "/arm_controller/trajectory_finished", 10
+                        move_to_position_server_ = rclcpp_action::create_server<MoveToPosition>(
+                                this, "/arm_controller/move_to_position",
+                                std::bind(&ArmController::handle_goal, this, std::placeholders::_1, std::placeholders::_2),
+                                std::bind(&ArmController::handle_cancel, this, std::placeholders::_1),
+                                std::bind(&ArmController::handle_accepted, this, std::placeholders::_1)
                         );
 
                         trajectory_timer_ = this->create_wall_timer(
@@ -120,7 +121,6 @@ class ArmController : public rclcpp::Node{
                 double trajectory_duration_ = 0.0;
                 bool trajectory_active_ = false;
                 rclcpp::TimerBase::SharedPtr trajectory_timer_;
-                rclcpp::Publisher<std_msgs::msg::Empty>::SharedPtr trajectory_finished_pub_;
 
                 // Interpolation de q_start_ vers q_goal_ avec un profil quintique :
                 // vitesse et acceleration nulles au depart et a l'arrivee, donc pas d'a-coup
@@ -147,20 +147,72 @@ class ArmController : public rclcpp::Node{
                         q_current_ = q_start_ + s * (q_goal_ - q_start_);
                         publish_joint_positions(q_current_);
 
+                        if (!active_goal_) {
+                                if (tau >= 1.0) trajectory_active_ = false;
+                                return;
+                        }
+
+                        // Annulation : on s'arrete a la position courante
+                        if (active_goal_->is_canceling()){
+                                trajectory_active_ = false;
+                                auto result = std::make_shared<MoveToPosition::Result>();
+                                result->success = false;
+                                result->message = "Trajectory canceled";
+                                active_goal_->canceled(result);
+                                active_goal_.reset();
+                                RCLCPP_INFO(this->get_logger(), "Trajectory canceled");
+                                return;
+                        }
+
+                        auto feedback = std::make_shared<MoveToPosition::Feedback>();
+                        feedback->progress = tau;
+                        active_goal_->publish_feedback(feedback);
+
                         if (tau >= 1.0){
                                 trajectory_active_ = false;
                                 RCLCPP_INFO(this->get_logger(), "Trajectory finished");
-                                trajectory_finished_pub_->publish(std_msgs::msg::Empty());
+                                auto result = std::make_shared<MoveToPosition::Result>();
+                                result->success = true;
+                                result->message = "Trajectory finished";
+                                active_goal_->succeed(result);
+                                active_goal_.reset();
                         }
                 }
 
-                // Command topic
-                rclcpp::Subscription<robot_msgs::msg::TargetPosition>::SharedPtr target_position_sub_;
-                void target_position_callback(const robot_msgs::msg::TargetPosition::SharedPtr msg){
+                // Action server
+                rclcpp_action::Server<MoveToPosition>::SharedPtr move_to_position_server_;
+                std::shared_ptr<GoalHandleMoveToPosition> active_goal_;
+
+                rclcpp_action::GoalResponse handle_goal(const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const MoveToPosition::Goal> goal){
+                        (void)uuid;
+                        RCLCPP_INFO(this->get_logger(), "Received goal (%.3f, %.3f, %.3f)", goal->x_target, goal->y_target, goal->z_target);
+                        return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+                }
+
+                rclcpp_action::CancelResponse handle_cancel(const std::shared_ptr<GoalHandleMoveToPosition> goal_handle){
+                        (void)goal_handle;
+                        RCLCPP_INFO(this->get_logger(), "Received cancel request");
+                        return rclcpp_action::CancelResponse::ACCEPT;
+                }
+
+                // Le timer et ce callback tournent dans le meme executor (single-thread), pas besoin de mutex
+                void handle_accepted(const std::shared_ptr<GoalHandleMoveToPosition> goal_handle){
+                        // Un nouveau goal remplace celui en cours
+                        if (active_goal_ && active_goal_->is_active()){
+                                auto result = std::make_shared<MoveToPosition::Result>();
+                                result->success = false;
+                                result->message = "Preempted by a new goal";
+                                active_goal_->abort(result);
+                                RCLCPP_WARN(this->get_logger(), "Previous goal preempted");
+                        }
+                        active_goal_.reset();
+
+                        const auto goal = goal_handle->get_goal();
+
                         // Cible dans le monde -> repere de la base (pose du panda dans panda_world.sdf)
-                        double x_target = msg->x_target - 0.2;
-                        double y_target = msg->y_target;
-                        double z_target = msg->z_target - 1.025;
+                        double x_target = goal->x_target - 0.2;
+                        double y_target = goal->y_target;
+                        double z_target = goal->z_target - 1.025;
 
                         Eigen::Vector3d target(
                                 x_target,
@@ -178,8 +230,18 @@ class ArmController : public rclcpp::Node{
                               1.0,
                               0.0;
 
-                        Eigen::Matrix<double, 7, 1> q = inverse_kinematics(target, q0);
+                        bool converged = false;
+                        Eigen::Matrix<double, 7, 1> q = inverse_kinematics(target, q0, converged);
 
+                        if (!converged){
+                                auto result = std::make_shared<MoveToPosition::Result>();
+                                result->success = false;
+                                result->message = "IK did not converge";
+                                goal_handle->abort(result);
+                                return;
+                        }
+
+                        active_goal_ = goal_handle;
                         start_trajectory(q);
 
                         RCLCPP_INFO(
@@ -348,7 +410,7 @@ class ArmController : public rclcpp::Node{
                         return J;
                 }
 
-                Eigen::Matrix<double, 7, 1> inverse_kinematics(const Eigen::Vector3d& target_position, Eigen::Matrix<double, 7, 1>& q){
+                Eigen::Matrix<double, 7, 1> inverse_kinematics(const Eigen::Vector3d& target_position, Eigen::Matrix<double, 7, 1>& q, bool& converged){
                         const int max_iterations = 1000;
 
                         const double position_tolerance = 1e-4;
@@ -380,6 +442,7 @@ class ArmController : public rclcpp::Node{
 
                                 if (position_error.norm() < position_tolerance && rotation_error.norm() < orientation_tolerance){
                                         RCLCPP_INFO(this->get_logger(), "IK converged after %d iterations",iteration);
+                                        converged = true;
                                         return q;
                                 }
 
@@ -417,6 +480,7 @@ class ArmController : public rclcpp::Node{
                                 "IK did not converge"
                         );
 
+                        converged = false;
                         return q;
                 }
 };

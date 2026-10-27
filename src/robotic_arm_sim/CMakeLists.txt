@@ -9,6 +9,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(robot_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
@@ -18,13 +19,16 @@ find_package(sensor_msgs REQUIRED)
 
 
 add_executable(arm_controller src/arm_controller.cpp)
-ament_target_dependencies(arm_controller rclcpp std_msgs robot_msgs)
+ament_target_dependencies(arm_controller rclcpp rclcpp_action std_msgs robot_msgs)
 target_link_libraries(arm_controller Eigen3::Eigen)
 
 add_executable(gripper_controller src/gripper_controller.cpp)
 ament_target_dependencies(gripper_controller rclcpp std_msgs std_srvs ros_gz_interfaces sensor_msgs)
 
-install(TARGETS arm_controller gripper_controller
+add_executable(main_controller src/main_controller.cpp)
+ament_target_dependencies(main_controller rclcpp rclcpp_action std_srvs robot_msgs)
+
+install(TARGETS arm_controller gripper_controller main_controller
   DESTINATION lib/${PROJECT_NAME})
 
 install(

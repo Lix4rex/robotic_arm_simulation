@@ -1,3 +1,0 @@
-float64 x_target
-float64 y_target
-float64 z_target
