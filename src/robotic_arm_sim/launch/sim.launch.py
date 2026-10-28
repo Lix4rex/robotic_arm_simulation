@@ -16,7 +16,7 @@ packageName = "robotic_arm_sim"
 armParamsConfigRelativePath = "config/arm_params.yaml"
 worldRelativePath = "world/panda_world.sdf"
 
-cubes = ["blue_cube", "red_cube", "green_cube"]
+cubes = ["blue_cube", "red_cube", "green_cube", "yellow_cube", "cyan_cube", "magenta_cube"]
 
 
 def generate_launch_description():

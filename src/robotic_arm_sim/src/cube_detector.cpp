@@ -18,16 +18,19 @@ class CubeDetector : public rclcpp::Node{
 
                         RCLCPP_INFO(this->get_logger(), "CubeDetector is launching...");
 
-                        // Seuils HSV (OpenCV : H dans [0, 180], S et V dans [0, 255]).
-                        // Le rouge est a cheval sur H = 0, d'ou deux plages.
-                        red_hue_max_ = this->declare_parameter<int>("red_hue_max", 10);
-                        red_hue_min_ = this->declare_parameter<int>("red_hue_min", 170);
-                        // Vert pur : H = 60
-                        green_hue_min_ = this->declare_parameter<int>("green_hue_min", 45);
-                        green_hue_max_ = this->declare_parameter<int>("green_hue_max", 75);
-                        // Bleu pur : H = 120
-                        blue_hue_min_ = this->declare_parameter<int>("blue_hue_min", 105);
-                        blue_hue_max_ = this->declare_parameter<int>("blue_hue_max", 135);
+                        // Couleurs a detecter : nom et plage de teinte par defaut
+                        // (OpenCV : H dans [0, 180], S et V dans [0, 255]).
+                        // Si hue_min > hue_max, la plage est a cheval sur H = 0 (cas du rouge).
+                        // Chaque couleur donne les parametres <nom>_hue_min / <nom>_hue_max
+                        // et le topic /cube_detector/<nom>_cube
+                        cubes_ = {
+                                {"red",    170, 10},   // Rouge pur : H = 0
+                                {"green",  45,  75},   // Vert pur : H = 60
+                                {"blue",   105, 135},  // Bleu pur : H = 120
+                                {"yellow", 20,  35},   // Jaune pur : H = 30
+                                {"cyan", 80,  100},   // Jaune pur : H = 90
+                                {"magenta", 140,  160},   // Jaune pur : H = 150
+                        };
 
                         saturation_min_ = this->declare_parameter<int>("saturation_min", 120);
                         value_min_ = this->declare_parameter<int>("value_min", 70);
@@ -60,16 +63,14 @@ class CubeDetector : public rclcpp::Node{
                                 [this](const sensor_msgs::msg::Image::ConstSharedPtr msg){ last_depth_ = msg; }
                         );
 
-                        // Position du centre du cube dans le repere monde (frame "map")
-                        red_cube_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>(
-                                "/cube_detector/red_cube", 10
-                        );
-                        green_cube_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>(
-                                "/cube_detector/green_cube", 10
-                        );
-                        blue_cube_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>(
-                                "/cube_detector/blue_cube", 10
-                        );
+                        for (CubeColor& cube : cubes_){
+                                cube.hue_min = this->declare_parameter<int>(cube.name + "_hue_min", cube.hue_min);
+                                cube.hue_max = this->declare_parameter<int>(cube.name + "_hue_max", cube.hue_max);
+                                // Position du centre du cube dans le repere monde (frame "map")
+                                cube.publisher = this->create_publisher<geometry_msgs::msg::PointStamped>(
+                                        "/cube_detector/" + cube.name + "_cube", 10
+                                );
+                        }
 
                         debug_image_pub_ = this->create_publisher<sensor_msgs::msg::Image>(
                                 "/cube_detector/debug_image", 10
@@ -79,6 +80,13 @@ class CubeDetector : public rclcpp::Node{
                 }
 
         private:
+
+                struct CubeColor{
+                        std::string name;
+                        int hue_min;
+                        int hue_max;
+                        rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr publisher = nullptr;
+                };
 
                 struct Detection{
                         std::string name;
@@ -119,6 +127,26 @@ class CubeDetector : public rclcpp::Node{
 
                         double t = (plane_z - camera_z_) / ray_world.z();
                         return camera_position + t * ray_world;
+                }
+
+                // Pixels de l'image HSV dans la plage de teinte de la couleur
+                cv::Mat color_mask(const cv::Mat& hsv, const CubeColor& cube){
+
+                        cv::Mat mask;
+                        if (cube.hue_min <= cube.hue_max){
+                                cv::inRange(hsv, cv::Scalar(cube.hue_min, saturation_min_, value_min_),
+                                            cv::Scalar(cube.hue_max, 255, 255), mask);
+                                return mask;
+                        }
+
+                        // Plage a cheval sur H = 0 : [hue_min, 180] U [0, hue_max]
+                        cv::Mat mask_low, mask_high;
+                        cv::inRange(hsv, cv::Scalar(0, saturation_min_, value_min_),
+                                    cv::Scalar(cube.hue_max, 255, 255), mask_low);
+                        cv::inRange(hsv, cv::Scalar(cube.hue_min, saturation_min_, value_min_),
+                                    cv::Scalar(180, 255, 255), mask_high);
+                        mask = mask_low | mask_high;
+                        return mask;
                 }
 
                 // Garde la plus grande zone du masque (le cube), apres nettoyage du bruit
@@ -214,78 +242,46 @@ class CubeDetector : public rclcpp::Node{
                         // Supprime le bruit gaussien de la camera puis rebouche les trous
                         cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(7, 7));
 
-                        Detection red, green, blue;
-                        red.name = "Red";
-                        red.publisher = red_cube_pub_;
-                        green.name = "Green";
-                        green.publisher = green_cube_pub_;
-                        blue.name = "Blue";
-                        blue.publisher = blue_cube_pub_;
-
-                        // ---------- Cube rouge ----------
-
-                        cv::Mat red_mask_low, red_mask_high, red_mask;
-                        cv::inRange(hsv, cv::Scalar(0, saturation_min_, value_min_),
-                                    cv::Scalar(red_hue_max_, 255, 255), red_mask_low);
-                        cv::inRange(hsv, cv::Scalar(red_hue_min_, saturation_min_, value_min_),
-                                    cv::Scalar(180, 255, 255), red_mask_high);
-                        red_mask = red_mask_low | red_mask_high;
-                        detect(red_mask, kernel, red);
-
-                        // ---------- Cube vert ----------
-
-                        cv::Mat green_mask;
-                        cv::inRange(hsv, cv::Scalar(green_hue_min_, saturation_min_, value_min_),
-                                    cv::Scalar(green_hue_max_, 255, 255), green_mask);
-                        detect(green_mask, kernel, green);
-
-                        // ---------- Cube bleu ----------
-
-                        cv::Mat blue_mask;
-                        cv::inRange(hsv, cv::Scalar(blue_hue_min_, saturation_min_, value_min_),
-                                    cv::Scalar(blue_hue_max_, 255, 255), blue_mask);
-                        detect(blue_mask, kernel, blue);
-
-                        // ---------- Position 3D et publication ----------
-
                         cv::Mat debug = cv_image->image.clone();
 
-                        for (Detection* d : {&red, &green, &blue}){
-                                if (!d->found) continue;
+                        for (const CubeColor& cube : cubes_){
+
+                                Detection detection;
+                                detection.name = cube.name;
+                                detection.publisher = cube.publisher;
+
+                                cv::Mat mask = color_mask(hsv, cube);
+                                detect(mask, kernel, detection);
+                                if (!detection.found) continue;
 
                                 double center_z;
-                                if (!compute_center_z(*d, cv_depth->image, center_z)){
-                                        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "%s cube: no valid depth", d->name.c_str());
+                                if (!compute_center_z(detection, cv_depth->image, center_z)){
+                                        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "%s cube: no valid depth", detection.name.c_str());
                                         continue;
                                 }
                                 // Le centre de la silhouette est sur le rayon du centre du cube : on le coupe
                                 // a la hauteur mesuree
-                                d->position = pixel_to_world(d->u, d->v, msg->width, msg->height, center_z);
+                                detection.position = pixel_to_world(detection.u, detection.v, msg->width, msg->height, center_z);
 
                                 geometry_msgs::msg::PointStamped point;
                                 point.header.stamp = msg->header.stamp;
                                 point.header.frame_id = "map";
-                                point.point.x = d->position.x();
-                                point.point.y = d->position.y();
-                                point.point.z = d->position.z();
-                                d->publisher->publish(point);
+                                point.point.x = detection.position.x();
+                                point.point.y = detection.position.y();
+                                point.point.z = detection.position.z();
+                                detection.publisher->publish(point);
 
-                                std::vector<std::vector<cv::Point>> contours = {d->contour};
+                                std::vector<std::vector<cv::Point>> contours = {detection.contour};
                                 cv::drawContours(debug, contours, 0, cv::Scalar(0, 255, 255), 5);
-                                cv::circle(debug, cv::Point(d->u, d->v), 15, cv::Scalar(255, 255, 255), -1);
-                                cv::putText(debug, d->name + " z=" + std::to_string(static_cast<int>(std::round(d->position.z() * 1000))) + "mm", cv::Point(d->u + 30, d->v),
+                                cv::circle(debug, cv::Point(detection.u, detection.v), 15, cv::Scalar(255, 255, 255), -1);
+                                cv::putText(debug, detection.name + " z=" + std::to_string(static_cast<int>(std::round(detection.position.z() * 1000))) + "mm", cv::Point(detection.u + 30, detection.v),
                                             cv::FONT_HERSHEY_SIMPLEX, 3, cv::Scalar(255, 255, 255), 6);
                         }
 
                         debug_image_pub_->publish(*cv_bridge::CvImage(msg->header, "bgr8", debug).toImageMsg());
                 }
 
-                int red_hue_max_;
-                int red_hue_min_;
-                int green_hue_min_;
-                int green_hue_max_;
-                int blue_hue_min_;
-                int blue_hue_max_;
+                std::vector<CubeColor> cubes_;
                 int saturation_min_;
                 int value_min_;
                 double min_area_;
@@ -303,9 +299,6 @@ class CubeDetector : public rclcpp::Node{
                 rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
                 rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
                 sensor_msgs::msg::Image::ConstSharedPtr last_depth_;
-                rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr red_cube_pub_;
-                rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr green_cube_pub_;
-                rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr blue_cube_pub_;
                 rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr debug_image_pub_;
 };
 

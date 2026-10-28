@@ -25,13 +25,13 @@ class ArmController : public rclcpp::Node{
                         max_joint_velocity_ = this->declare_parameter<double>("max_joint_velocity", 0.8);
                         min_trajectory_duration_ = this->declare_parameter<double>("min_trajectory_duration", 1.0);
                         reset_cubes_ = this->declare_parameter<std::vector<std::string>>(
-                                "reset_cubes", {"blue_cube", "red_cube", "green_cube"}
+                                "reset_cubes", {"blue_cube", "red_cube", "green_cube", "yellow_cube", "cyan_cube", "magenta_cube"}
                         );
                         reset_area_x_ = this->declare_parameter<std::vector<double>>("reset_area_x", {0.35, 1.14});
                         reset_area_y_ = this->declare_parameter<std::vector<double>>("reset_area_y", {-0.6, 0.6});
                         reset_robot_xy_ = this->declare_parameter<std::vector<double>>("reset_robot_xy", {0.2, 0.0});
                         reset_reach_ = this->declare_parameter<std::vector<double>>("reset_reach", {0.3, 0.8});
-                        reset_exclusion_zones_ = this->declare_parameter<std::vector<double>>("reset_exclusion_zones", {0.8, 0.0, 0.15});
+                        reset_exclusion_zones_ = this->declare_parameter<std::vector<double>>("reset_exclusion_zones", {0.5, 0.0, 0.2});
                         reset_base_z_ = this->declare_parameter<double>("reset_base_z", 1.07);
                         cube_stack_step_ = this->declare_parameter<double>("cube_stack_step", 0.07);
                         reset_min_spacing_ = this->declare_parameter<double>("reset_min_spacing", 0.12);
@@ -214,7 +214,7 @@ class ArmController : public rclcpp::Node{
 
                 rclcpp_action::GoalResponse handle_goal(const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const MoveToPosition::Goal> goal){
                         (void)uuid;
-                        RCLCPP_INFO(this->get_logger(), "Received goal (%.3f, %.3f, %.3f)", goal->x_target, goal->y_target, goal->z_target);
+                        RCLCPP_INFO(this->get_logger(), "Received goal (%.3f, %.3f, %.3f, %.3f)", goal->x_target, goal->y_target, goal->z_target, goal->theta_target);
                         return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
                 }
 
@@ -243,6 +243,8 @@ class ArmController : public rclcpp::Node{
                         double y_target = goal->y_target;
                         double z_target = goal->z_target - 1.025;
 
+                        double theta_target = goal->theta_target;
+
                         Eigen::Vector3d target(
                                 x_target,
                                 y_target,
@@ -260,7 +262,7 @@ class ArmController : public rclcpp::Node{
                               0.0;
 
                         bool converged = false;
-                        Eigen::Matrix<double, 7, 1> q = inverse_kinematics(target, q0, converged);
+                        Eigen::Matrix<double, 7, 1> q = inverse_kinematics(target, theta_target, q0, converged);
 
                         if (!converged){
                                 auto result = std::make_shared<MoveToPosition::Result>();
@@ -424,7 +426,7 @@ class ArmController : public rclcpp::Node{
                         return J;
                 }
 
-                Eigen::Matrix<double, 7, 1> inverse_kinematics(const Eigen::Vector3d& target_position, Eigen::Matrix<double, 7, 1>& q, bool& converged){
+                Eigen::Matrix<double, 7, 1> inverse_kinematics(const Eigen::Vector3d& target_position, const float theta, Eigen::Matrix<double, 7, 1>& q, bool& converged){
                         const int max_iterations = 1000;
 
                         const double position_tolerance = 1e-4;
@@ -436,9 +438,9 @@ class ArmController : public rclcpp::Node{
                         Eigen::Matrix3d R_target;
 
                         R_target <<
-                                1,  0,  0,
-                                0, -1,  0,
-                                0,  0, -1;
+                                std::cos(theta),  std::sin(theta),  0,
+                                std::sin(theta), -std::cos(theta),  0,
+                                        0      ,        0        , -1;
 
                         for (int iteration = 0; iteration < max_iterations; iteration++){
                                 Eigen::Matrix4d T = forward_kinematics_matrix(q);

@@ -26,7 +26,7 @@ class GripperController : public rclcpp::Node{
                         RCLCPP_INFO(this->get_logger(), "GripperController is launching...");
 
                         cubes_ = this->declare_parameter<std::vector<std::string>>(
-                                "cubes", {"blue_cube", "red_cube", "green_cube"}
+                                "cubes", {"blue_cube", "red_cube", "green_cube", "yellow_cube", "cyan_cube", "magenta_cube"}
                         );
                         open_position_ = this->declare_parameter<double>("open_position", 0.04);
                         close_position_ = this->declare_parameter<double>("close_position", 0.0);

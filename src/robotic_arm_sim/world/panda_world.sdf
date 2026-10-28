@@ -208,6 +208,30 @@
         <detach_topic>/panda/green_cube/detach</detach_topic>
         <output_topic>/panda/green_cube/state</output_topic>
       </plugin>
+      <plugin filename="gz-sim-detachable-joint-system" name="gz::sim::systems::DetachableJoint">
+        <parent_link>panda_hand</parent_link>
+        <child_model>yellow_cube</child_model>
+        <child_link>link</child_link>
+        <attach_topic>/panda/yellow_cube/attach</attach_topic>
+        <detach_topic>/panda/yellow_cube/detach</detach_topic>
+        <output_topic>/panda/yellow_cube/state</output_topic>
+      </plugin>
+      <plugin filename="gz-sim-detachable-joint-system" name="gz::sim::systems::DetachableJoint">
+        <parent_link>panda_hand</parent_link>
+        <child_model>cyan_cube</child_model>
+        <child_link>link</child_link>
+        <attach_topic>/panda/cyan_cube/attach</attach_topic>
+        <detach_topic>/panda/cyan_cube/detach</detach_topic>
+        <output_topic>/panda/cyan_cube/state</output_topic>
+      </plugin>
+      <plugin filename="gz-sim-detachable-joint-system" name="gz::sim::systems::DetachableJoint">
+        <parent_link>panda_hand</parent_link>
+        <child_model>magenta_cube</child_model>
+        <child_link>link</child_link>
+        <attach_topic>/panda/magenta_cube/attach</attach_topic>
+        <detach_topic>/panda/magenta_cube/detach</detach_topic>
+        <output_topic>/panda/magenta_cube/state</output_topic>
+      </plugin>
     </include>
 
     <include>
@@ -230,7 +254,7 @@
          etre detecte comme un cube. Cote interieur 0.08 (cube de 0.06). Plateau de table2 a z = 1.015 -->
     <model name="deposit_zone">
       <static>true</static>
-      <pose>0.8 0 1.016 0 0 0</pose>
+      <pose>0.5 0 1.016 0 0 0</pose>
       <link name="link">
         <visual name="top"><pose>0 0.0425 0 0 0 0</pose><geometry><box><size>0.09 0.005 0.002</size></box></geometry><material><ambient>0.05 0.05 0.05 1</ambient><diffuse>0.05 0.05 0.05 1</diffuse><specular>0 0 0 1</specular></material><cast_shadows>false</cast_shadows></visual>
         <visual name="bottom"><pose>0 -0.0425 0 0 0 0</pose><geometry><box><size>0.09 0.005 0.002</size></box></geometry><material><ambient>0.05 0.05 0.05 1</ambient><diffuse>0.05 0.05 0.05 1</diffuse><specular>0 0 0 1</specular></material><cast_shadows>false</cast_shadows></visual>
@@ -239,9 +263,8 @@
       </link>
     </model>
 
-
-    <model name="blue_cube">
-      <pose>0.8 0.0 1.21 0 0 0</pose>
+    <model name="green_cube">
+      <pose>0.8 0.0 1.07 0 0 0</pose>
       <link name="link">
         <inertial>
           <mass>0.05</mass>
@@ -260,7 +283,7 @@
         <sensor name="contact" type="contact">
           <contact>
             <collision>collision</collision>
-            <topic>/panda/blue_cube/contacts</topic>
+            <topic>/panda/green_cube/contacts</topic>
           </contact>
           <update_rate>50</update_rate>
           <always_on>true</always_on>
@@ -268,8 +291,8 @@
         <visual name="visual">
           <geometry><box><size>0.06 0.06 0.06</size></box></geometry>
           <material>
-            <ambient>0 0 0.6 1</ambient>
-            <diffuse>0 0 1 1</diffuse>
+            <ambient>0 0.6 0 1</ambient>
+            <diffuse>0 1 0 1</diffuse>
             <specular>0.5 0.5 0.5 1</specular>
           </material>
         </visual>
@@ -312,8 +335,9 @@
       </link>
     </model>
 
-    <model name="green_cube">
-      <pose>0.8 0.0 1.07 0 0 0</pose>
+
+    <model name="blue_cube">
+      <pose>0.8 0.0 1.21 0 0 0</pose>
       <link name="link">
         <inertial>
           <mass>0.05</mass>
@@ -332,7 +356,7 @@
         <sensor name="contact" type="contact">
           <contact>
             <collision>collision</collision>
-            <topic>/panda/green_cube/contacts</topic>
+            <topic>/panda/blue_cube/contacts</topic>
           </contact>
           <update_rate>50</update_rate>
           <always_on>true</always_on>
@@ -340,8 +364,119 @@
         <visual name="visual">
           <geometry><box><size>0.06 0.06 0.06</size></box></geometry>
           <material>
-            <ambient>0 0.6 0 1</ambient>
-            <diffuse>0 1 0 1</diffuse>
+            <ambient>0 0 0.6 1</ambient>
+            <diffuse>0 0 1 1</diffuse>
+            <specular>0.5 0.5 0.5 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+
+    <model name="yellow_cube">
+      <pose>0.8 0.0 1.28 0 0 0</pose>
+      <link name="link">
+        <inertial>
+          <mass>0.05</mass>
+          <inertia>
+            <ixx>3e-05</ixx><iyy>3e-05</iyy><izz>3e-05</izz>
+            <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+          </inertia>
+        </inertial>
+        <collision name="collision">
+          <geometry><box><size>0.06 0.06 0.06</size></box></geometry>
+          <surface>
+            <friction><ode><mu>2.0</mu><mu2>2.0</mu2></ode></friction>
+            <contact><ode><kp>1e5</kp><kd>1</kd><min_depth>0.001</min_depth></ode></contact>
+          </surface>
+        </collision>
+        <sensor name="contact" type="contact">
+          <contact>
+            <collision>collision</collision>
+            <topic>/panda/yellow_cube/contacts</topic>
+          </contact>
+          <update_rate>50</update_rate>
+          <always_on>true</always_on>
+        </sensor>
+        <visual name="visual">
+          <geometry><box><size>0.06 0.06 0.06</size></box></geometry>
+          <material>
+            <ambient>0.6 0.6 0 1</ambient>
+            <diffuse>1 1 0 1</diffuse>
+            <specular>0.5 0.5 0.5 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+
+    <model name="cyan_cube">
+      <pose>0.8 0.0 1.35 0 0 0</pose>
+      <link name="link">
+        <inertial>
+          <mass>0.05</mass>
+          <inertia>
+            <ixx>3e-05</ixx><iyy>3e-05</iyy><izz>3e-05</izz>
+            <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+          </inertia>
+        </inertial>
+        <collision name="collision">
+          <geometry><box><size>0.06 0.06 0.06</size></box></geometry>
+          <surface>
+            <friction><ode><mu>2.0</mu><mu2>2.0</mu2></ode></friction>
+            <contact><ode><kp>1e5</kp><kd>1</kd><min_depth>0.001</min_depth></ode></contact>
+          </surface>
+        </collision>
+        <sensor name="contact" type="contact">
+          <contact>
+            <collision>collision</collision>
+            <topic>/panda/cyan_cube/contacts</topic>
+          </contact>
+          <update_rate>50</update_rate>
+          <always_on>true</always_on>
+        </sensor>
+        <visual name="visual">
+          <geometry><box><size>0.06 0.06 0.06</size></box></geometry>
+          <material>
+            <ambient>0 0.6 0.6 1</ambient>
+            <diffuse>0 1 1 1</diffuse>
+            <specular>0.5 0.5 0.5 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+
+    <model name="magenta_cube">
+      <pose>0.8 0.0 1.42 0 0 0</pose>
+      <link name="link">
+        <inertial>
+          <mass>0.05</mass>
+          <inertia>
+            <ixx>3e-05</ixx><iyy>3e-05</iyy><izz>3e-05</izz>
+            <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+          </inertia>
+        </inertial>
+        <collision name="collision">
+          <geometry><box><size>0.06 0.06 0.06</size></box></geometry>
+          <surface>
+            <friction><ode><mu>2.0</mu><mu2>2.0</mu2></ode></friction>
+            <contact><ode><kp>1e5</kp><kd>1</kd><min_depth>0.001</min_depth></ode></contact>
+          </surface>
+        </collision>
+        <sensor name="contact" type="contact">
+          <contact>
+            <collision>collision</collision>
+            <topic>/panda/magenta_cube/contacts</topic>
+          </contact>
+          <update_rate>50</update_rate>
+          <always_on>true</always_on>
+        </sensor>
+        <visual name="visual">
+          <geometry><box><size>0.06 0.06 0.06</size></box></geometry>
+          <material>
+            <ambient>0.6 0 0.6 1</ambient>
+            <diffuse>1 0 1 1</diffuse>
             <specular>0.5 0.5 0.5 1</specular>
           </material>
         </visual>

@@ -121,6 +121,56 @@
   ros_type_name: std_msgs/msg/String
   gz_type_name: gz.msgs.StringMsg
   direction: GZ_TO_ROS
+
+- ros_topic_name: /panda/yellow_cube/attach
+  gz_topic_name: /panda/yellow_cube/attach
+  ros_type_name: std_msgs/msg/Empty
+  gz_type_name: gz.msgs.Empty
+  direction: ROS_TO_GZ
+- ros_topic_name: /panda/yellow_cube/detach
+  gz_topic_name: /panda/yellow_cube/detach
+  ros_type_name: std_msgs/msg/Empty
+  gz_type_name: gz.msgs.Empty
+  direction: ROS_TO_GZ
+- ros_topic_name: /panda/yellow_cube/state
+  gz_topic_name: /panda/yellow_cube/state
+  ros_type_name: std_msgs/msg/String
+  gz_type_name: gz.msgs.StringMsg
+  direction: GZ_TO_ROS
+
+- ros_topic_name: /panda/cyan_cube/attach
+  gz_topic_name: /panda/cyan_cube/attach
+  ros_type_name: std_msgs/msg/Empty
+  gz_type_name: gz.msgs.Empty
+  direction: ROS_TO_GZ
+- ros_topic_name: /panda/cyan_cube/detach
+  gz_topic_name: /panda/cyan_cube/detach
+  ros_type_name: std_msgs/msg/Empty
+  gz_type_name: gz.msgs.Empty
+  direction: ROS_TO_GZ
+- ros_topic_name: /panda/cyan_cube/state
+  gz_topic_name: /panda/cyan_cube/state
+  ros_type_name: std_msgs/msg/String
+  gz_type_name: gz.msgs.StringMsg
+  direction: GZ_TO_ROS
+
+- ros_topic_name: /panda/magenta_cube/attach
+  gz_topic_name: /panda/magenta_cube/attach
+  ros_type_name: std_msgs/msg/Empty
+  gz_type_name: gz.msgs.Empty
+  direction: ROS_TO_GZ
+- ros_topic_name: /panda/magenta_cube/detach
+  gz_topic_name: /panda/magenta_cube/detach
+  ros_type_name: std_msgs/msg/Empty
+  gz_type_name: gz.msgs.Empty
+  direction: ROS_TO_GZ
+- ros_topic_name: /panda/magenta_cube/state
+  gz_topic_name: /panda/magenta_cube/state
+  ros_type_name: std_msgs/msg/String
+  gz_type_name: gz.msgs.StringMsg
+  direction: GZ_TO_ROS
+
+
 - ros_topic_name: /panda/blue_cube/contacts
   gz_topic_name: /panda/blue_cube/contacts
   ros_type_name: ros_gz_interfaces/msg/Contacts
@@ -136,6 +186,22 @@
   ros_type_name: ros_gz_interfaces/msg/Contacts
   gz_type_name: gz.msgs.Contacts
   direction: GZ_TO_ROS
+- ros_topic_name: /panda/yellow_cube/contacts
+  gz_topic_name: /panda/yellow_cube/contacts
+  ros_type_name: ros_gz_interfaces/msg/Contacts
+  gz_type_name: gz.msgs.Contacts
+  direction: GZ_TO_ROS
+- ros_topic_name: /panda/cyan_cube/contacts
+  gz_topic_name: /panda/cyan_cube/contacts
+  ros_type_name: ros_gz_interfaces/msg/Contacts
+  gz_type_name: gz.msgs.Contacts
+  direction: GZ_TO_ROS
+- ros_topic_name: /panda/magenta_cube/contacts
+  gz_topic_name: /panda/magenta_cube/contacts
+  ros_type_name: ros_gz_interfaces/msg/Contacts
+  gz_type_name: gz.msgs.Contacts
+  direction: GZ_TO_ROS
+
 - ros_topic_name: /joint_states
   gz_topic_name: /world/panda_world/model/panda/joint_state
   ros_type_name: sensor_msgs/msg/JointState

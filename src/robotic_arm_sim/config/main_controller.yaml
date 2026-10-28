@@ -1,3 +1,3 @@
 main_controller:
   ros__parameters:
-    cube_order: ["green", "blue", "red"]
+    cube_order: ["green", "blue", "red", "yellow", "cyan", "magenta"]
