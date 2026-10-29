@@ -3,8 +3,9 @@ arm_controller:
     test: true
     max_joint_velocity: 0.8       # rad/s, vitesse max d une articulation pendant une trajectoire
     min_trajectory_duration: 1.0  # s
+    max_linear_velocity: 0.2      # m/s, vitesse max de la pince pendant une trajectoire cartesienne
     reset_cubes: ["blue_cube", "red_cube", "green_cube", "yellow_cube", "cyan_cube", "magenta_cube"]
-    reset_area_x: [0.35, 1.0]      # m, zone de tirage aleatoire des cubes au reset (table2 : x 0.394 -> 1.194)
+    reset_area_x: [0.2, 1.0]      # m, zone de tirage aleatoire des cubes au reset (table2 : x 0.394 -> 1.194)
     reset_area_y: [-0.6, 0.6]       # m, table2 : y -0.75 -> 0.75 (toute la table est vue par la camera)
     reset_robot_xy: [0.2, 0.0]      # m, base du panda
     reset_reach: [0.3, 0.7]         # m, distance horizontale min (socle) / max (portee) a la base du robot
@@ -13,3 +14,4 @@ arm_controller:
     cube_stack_step: 0.07           # m, cube de 0.06 + 0.01 de marge (le cube tombe sur celui du dessous)
     reset_min_spacing: 0.12         # m, distance min entre deux piles
     reset_stack_probability: 0.4    # proba de poser un cube sur une pile existante
+    reset_max_yaw: 0.785            # rad, yaw aleatoire des cubes dans [-max, max] (pi/4 couvre tout, un cube etant symetrique a 90 deg ; 0 = alignes)

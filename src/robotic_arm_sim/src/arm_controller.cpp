@@ -6,6 +6,7 @@
 #include "ros_gz_interfaces/srv/set_entity_pose.hpp"
 
 #include <Eigen/Dense>
+#include <algorithm>
 #include <cmath>
 #include <numeric>
 #include <random>
@@ -24,6 +25,7 @@ class ArmController : public rclcpp::Node{
 
                         max_joint_velocity_ = this->declare_parameter<double>("max_joint_velocity", 0.8);
                         min_trajectory_duration_ = this->declare_parameter<double>("min_trajectory_duration", 1.0);
+                        max_linear_velocity_ = this->declare_parameter<double>("max_linear_velocity", 0.2);
                         reset_cubes_ = this->declare_parameter<std::vector<std::string>>(
                                 "reset_cubes", {"blue_cube", "red_cube", "green_cube", "yellow_cube", "cyan_cube", "magenta_cube"}
                         );
@@ -36,6 +38,7 @@ class ArmController : public rclcpp::Node{
                         cube_stack_step_ = this->declare_parameter<double>("cube_stack_step", 0.07);
                         reset_min_spacing_ = this->declare_parameter<double>("reset_min_spacing", 0.12);
                         reset_stack_probability_ = this->declare_parameter<double>("reset_stack_probability", 0.4);
+                        reset_max_yaw_ = this->declare_parameter<double>("reset_max_yaw", M_PI / 4);
 
                         // Position de depart des joints dans Gazebo (joint 4 en butee haute)
                         q_initial_ << 0.0, 0.0, 0.0, -0.0698, 0.0, 0.0, 0.0;
@@ -147,11 +150,21 @@ class ArmController : public rclcpp::Node{
                 bool trajectory_active_ = false;
                 rclcpp::TimerBase::SharedPtr trajectory_timer_;
 
+                // Trajectoire cartesienne : la pince (TCP) suit une ligne droite de p_start_ a p_goal_
+                // (repere de la base) et le yaw passe de theta_start_ a theta_goal_, pince toujours vers le bas
+                double max_linear_velocity_;
+                bool cartesian_ = false;
+                Eigen::Vector3d p_start_;
+                Eigen::Vector3d p_goal_;
+                double theta_start_ = 0.0;
+                double theta_goal_ = 0.0;
+
                 // Interpolation de q_start_ vers q_goal_ avec un profil quintique :
                 // vitesse et acceleration nulles au depart et a l'arrivee, donc pas d'a-coup
                 void start_trajectory(const Eigen::Matrix<double, 7, 1>& q_goal){
                         q_start_ = q_current_;
                         q_goal_ = q_goal;
+                        cartesian_ = false;
 
                         // Vitesse max du profil quintique = 1.875 * deplacement / duree
                         const double max_delta = (q_goal_ - q_start_).cwiseAbs().maxCoeff();
@@ -159,7 +172,34 @@ class ArmController : public rclcpp::Node{
                         trajectory_start_ = std::chrono::steady_clock::now();
                         trajectory_active_ = true;
 
-                        RCLCPP_INFO(this->get_logger(), "Trajectory started (%.2f s)", trajectory_duration_);
+                        RCLCPP_INFO(this->get_logger(), "Joint trajectory started (%.2f s)", trajectory_duration_);
+                }
+
+                // Meme profil quintique, mais applique a la position et au yaw de la pince ;
+                // les joints sont recalcules par IK a chaque pas (voir trajectory_callback)
+                void start_cartesian_trajectory(const Eigen::Vector3d& p_goal, double theta_goal, const Eigen::Matrix<double, 7, 1>& q_goal){
+                        const Eigen::Matrix4d T = forward_kinematics_matrix(q_current_);
+                        p_start_ = T.block<3,1>(0,3);
+                        theta_start_ = std::atan2(T(1,0), T(0,0));
+                        p_goal_ = p_goal;
+                        // Plus court chemin en yaw (meme orientation a 2*pi pres)
+                        theta_goal_ = theta_start_ + std::remainder(theta_goal - theta_start_, 2.0 * M_PI);
+                        q_start_ = q_current_;
+                        q_goal_ = q_goal;
+                        cartesian_ = true;
+
+                        // Duree limitee par la vitesse lineaire de la pince et par la vitesse des joints
+                        const double distance = (p_goal_ - p_start_).norm();
+                        const double max_delta = std::max((q_goal_ - q_start_).cwiseAbs().maxCoeff(), std::abs(theta_goal_ - theta_start_));
+                        trajectory_duration_ = std::max({
+                                1.875 * distance / max_linear_velocity_,
+                                1.875 * max_delta / max_joint_velocity_,
+                                min_trajectory_duration_
+                        });
+                        trajectory_start_ = std::chrono::steady_clock::now();
+                        trajectory_active_ = true;
+
+                        RCLCPP_INFO(this->get_logger(), "Cartesian trajectory started (%.2f s, %.3f m)", trajectory_duration_, distance);
                 }
 
                 void trajectory_callback(){
@@ -169,7 +209,23 @@ class ArmController : public rclcpp::Node{
                         const double tau = std::min(elapsed / trajectory_duration_, 1.0);
                         const double s = tau * tau * tau * (10.0 - 15.0 * tau + 6.0 * tau * tau);
 
-                        q_current_ = q_start_ + s * (q_goal_ - q_start_);
+                        if (cartesian_){
+                                const Eigen::Vector3d p = p_start_ + s * (p_goal_ - p_start_);
+                                const double theta = theta_start_ + s * (theta_goal_ - theta_start_);
+
+                                // IK amorcee par la consigne precedente : petit pas, donc convergence rapide
+                                // et pas de saut de configuration du bras en cours de route
+                                Eigen::Matrix<double, 7, 1> q = q_initial_;
+                                bool converged = false;
+                                inverse_kinematics(p, theta, q, converged);
+                                if (!converged){
+                                        stop_motion("IK did not converge along the Cartesian path");
+                                        return;
+                                }
+                                q_current_ = q;
+                        } else {
+                                q_current_ = q_start_ + s * (q_goal_ - q_start_);
+                        }
                         publish_joint_positions(q_current_);
 
                         if (!active_goal_) {
@@ -249,20 +305,19 @@ class ArmController : public rclcpp::Node{
                                 x_target,
                                 y_target,
                                 z_target
-                        );                      
-                        
-                        Eigen::Matrix<double, 7, 1> q0;
+                        );
 
-                        q0 << 0.0,
-                              0.0,
-                              0.0,
-                              -1.5,
-                              0.0,
-                              1.0,
-                              0.0;
-
+                        // IK de la cible amorcee par la consigne courante pour garder la meme configuration du bras.
                         bool converged = false;
-                        Eigen::Matrix<double, 7, 1> q = inverse_kinematics(target, theta_target, q0, converged);
+                        //Eigen::Matrix<double, 7, 1> q = q_current_;
+                        Eigen::Matrix<double, 7, 1> q = q_initial_;
+                        inverse_kinematics(target, theta_target, q, converged);
+
+                        // Repli sur une configuration "bras plie, pince vers le bas" (ex : depuis la pose initiale tendue)
+                        if (!converged){
+                                q << 0.0, 0.0, 0.0, -1.5, 0.0, 1.0, 0.0;
+                                inverse_kinematics(target, theta_target, q, converged);
+                        }
 
                         if (!converged){
                                 auto result = std::make_shared<MoveToPosition::Result>();
@@ -273,7 +328,14 @@ class ArmController : public rclcpp::Node{
                         }
 
                         active_goal_ = goal_handle;
-                        start_trajectory(q);
+
+                        // Ligne droite seulement si la pince pointe deja vers le bas : sinon le yaw seul ne
+                        // decrit pas l'orientation de depart (ex : pose initiale), on passe alors en joints
+                        if (forward_kinematics_matrix(q_current_)(2,2) < -0.99){
+                                start_cartesian_trajectory(target, theta_target, q);
+                        } else {
+                                start_trajectory(q);
+                        }
                 }
 
                 Eigen::Matrix4d T10(double alpha1){
@@ -457,7 +519,8 @@ class ArmController : public rclcpp::Node{
                                 error.tail<3>() = rotation_error;
 
                                 if (position_error.norm() < position_tolerance && rotation_error.norm() < orientation_tolerance){
-                                        RCLCPP_INFO(this->get_logger(), "IK converged after %d iterations",iteration);
+                                        // DEBUG : appelee a chaque pas (100 Hz) pendant une trajectoire cartesienne
+                                        RCLCPP_DEBUG(this->get_logger(), "IK converged after %d iterations",iteration);
                                         converged = true;
                                         return q;
                                 }
@@ -519,6 +582,7 @@ class ArmController : public rclcpp::Node{
                 double cube_stack_step_;            // ecart en z entre deux cubes empiles (taille + marge)
                 double reset_min_spacing_;          // distance min entre deux piles
                 double reset_stack_probability_;    // proba de poser un cube sur une pile existante
+                double reset_max_yaw_;              // yaw aleatoire tire dans [-max, max] (rad), 0 = cubes alignes
                 std::mt19937 rng_{std::random_device{}()};
                 size_t pending_cube_poses_ = 0;
                 bool cube_pose_failed_ = false;
@@ -585,6 +649,7 @@ class ArmController : public rclcpp::Node{
                         std::uniform_real_distribution<double> dist_x(reset_area_x_[0], reset_area_x_[1]);
                         std::uniform_real_distribution<double> dist_y(reset_area_y_[0], reset_area_y_[1]);
                         std::bernoulli_distribution stack_dist(reset_stack_probability_);
+                        std::uniform_real_distribution<double> dist_yaw(-reset_max_yaw_, reset_max_yaw_);
 
                         std::vector<size_t> order(reset_cubes_.size());
                         std::iota(order.begin(), order.end(), 0);
@@ -618,7 +683,10 @@ class ArmController : public rclcpp::Node{
                                 request->pose.position.x = pile.x;
                                 request->pose.position.y = pile.y;
                                 request->pose.position.z = reset_base_z_ + cube_stack_step_ * pile.height++;
-                                request->pose.orientation.w = 1.0;
+                                // Rotation autour de z uniquement : le cube reste a plat
+                                double yaw = dist_yaw(rng_);
+                                request->pose.orientation.z = std::sin(yaw / 2);
+                                request->pose.orientation.w = std::cos(yaw / 2);
 
                                 const std::string cube = reset_cubes_[i];
                                 set_pose_client_->async_send_request(request,

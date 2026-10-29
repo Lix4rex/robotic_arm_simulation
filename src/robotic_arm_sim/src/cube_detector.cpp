@@ -1,6 +1,6 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
-#include "geometry_msgs/msg/point_stamped.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
 
 #include <cv_bridge/cv_bridge.hpp>
 #include <opencv2/imgproc.hpp>
@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,11 @@ class CubeDetector : public rclcpp::Node{
                         depth_erode_px_ = this->declare_parameter<int>("depth_erode_px", 15);
                         // Centile des hauteurs mesurees pris comme dessus du cube (robuste aux pixels parasites)
                         top_percentile_ = this->declare_parameter<double>("top_percentile", 0.9);
+                        // Erosion (px de l'image couleur) avant de reconstruire les points servant a l'orientation :
+                        // plus faible que depth_erode_px pour garder les aretes, les intrus sont filtres en 3D
+                        yaw_erode_px_ = this->declare_parameter<int>("yaw_erode_px", 4);
+                        // Nombre minimal de points 3D pour estimer l'orientation
+                        yaw_min_points_ = this->declare_parameter<int>("yaw_min_points", 30);
 
                         image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
                                 "/deported_camera/image", rclcpp::QoS(rclcpp::KeepLast(1)).reliable(),
@@ -66,8 +72,9 @@ class CubeDetector : public rclcpp::Node{
                         for (CubeColor& cube : cubes_){
                                 cube.hue_min = this->declare_parameter<int>(cube.name + "_hue_min", cube.hue_min);
                                 cube.hue_max = this->declare_parameter<int>(cube.name + "_hue_max", cube.hue_max);
-                                // Position du centre du cube dans le repere monde (frame "map")
-                                cube.publisher = this->create_publisher<geometry_msgs::msg::PointStamped>(
+                                // Pose du centre du cube dans le repere monde (frame "map") : position + lacet
+                                // (rotation autour de z, ramene dans [-pi/4, pi/4[ par symetrie du cube)
+                                cube.publisher = this->create_publisher<geometry_msgs::msg::PoseStamped>(
                                         "/cube_detector/" + cube.name + "_cube", 10
                                 );
                         }
@@ -85,18 +92,19 @@ class CubeDetector : public rclcpp::Node{
                         std::string name;
                         int hue_min;
                         int hue_max;
-                        rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr publisher = nullptr;
+                        rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr publisher = nullptr;
                 };
 
                 struct Detection{
                         std::string name;
-                        rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr publisher;
+                        rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr publisher;
                         bool found = false;
                         std::vector<cv::Point> contour;
                         cv::Mat mask;           // silhouette remplie du cube
                         double u = 0.0;
                         double v = 0.0;
                         Eigen::Vector3d position;
+                        double yaw = 0.0;
                 };
 
                 // Pixel (u, v) -> direction du rayon dans le monde, normalisee pour que sa
@@ -183,21 +191,22 @@ class CubeDetector : public rclcpp::Node{
                         detection.v = m.m01 / m.m00;
                 }
 
-                // Hauteur du centre du cube a partir de la profondeur : on reconstruit en 3D les points
-                // vus a l'interieur de la silhouette, le plus haut d'entre eux est le dessus du cube.
-                // (Sur un cube du milieu d'une pile, le dessus est cache mais l'arete haute de la face
-                // avant est a la meme hauteur.)
-                bool compute_center_z(const Detection& detection, const cv::Mat& depth, double& center_z){
+                // Points du monde vus par la camera de profondeur a l'interieur de la silhouette,
+                // erodee de erode_px pixels (image couleur)
+                std::vector<Eigen::Vector3d> reconstruct_points(const cv::Mat& silhouette, const cv::Mat& depth, int erode_px){
 
-                        cv::Mat mask;
-                        cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE,
-                                cv::Size(2 * depth_erode_px_ + 1, 2 * depth_erode_px_ + 1));
-                        cv::erode(detection.mask, mask, kernel);
+                        cv::Mat mask = silhouette;
+                        if (erode_px > 0){
+                                cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE,
+                                        cv::Size(2 * erode_px + 1, 2 * erode_px + 1));
+                                cv::erode(silhouette, mask, kernel);
+                        }
 
                         double scale_x = static_cast<double>(mask.cols) / depth.cols;
                         double scale_y = static_cast<double>(mask.rows) / depth.rows;
+                        Eigen::Vector3d camera_position(camera_x_, camera_y_, camera_z_);
 
-                        std::vector<double> heights;
+                        std::vector<Eigen::Vector3d> points;
                         for (int dv = 0; dv < depth.rows; ++dv){
                                 int v = static_cast<int>((dv + 0.5) * scale_y);
                                 for (int du = 0; du < depth.cols; ++du){
@@ -207,8 +216,21 @@ class CubeDetector : public rclcpp::Node{
                                         float d = depth.at<float>(dv, du);
                                         if (!std::isfinite(d)) continue;
 
-                                        heights.push_back(camera_z_ + d * pixel_to_ray(du, dv, depth.cols, depth.rows).z());
+                                        points.push_back(camera_position + d * pixel_to_ray(du, dv, depth.cols, depth.rows));
                                 }
+                        }
+                        return points;
+                }
+
+                // Hauteur du centre du cube a partir de la profondeur : on reconstruit en 3D les points
+                // vus a l'interieur de la silhouette, le plus haut d'entre eux est le dessus du cube.
+                // (Sur un cube du milieu d'une pile, le dessus est cache mais l'arete haute de la face
+                // avant est a la meme hauteur.)
+                bool compute_center_z(const Detection& detection, const cv::Mat& depth, double& center_z){
+
+                        std::vector<double> heights;
+                        for (const Eigen::Vector3d& p : reconstruct_points(detection.mask, depth, depth_erode_px_)){
+                                heights.push_back(p.z());
                         }
 
                         if (heights.empty()) return false;
@@ -216,6 +238,35 @@ class CubeDetector : public rclcpp::Node{
                         size_t k = static_cast<size_t>(top_percentile_ * (heights.size() - 1));
                         std::nth_element(heights.begin(), heights.begin() + k, heights.end());
                         center_z = heights[k] - cube_size_ / 2.0;
+                        return true;
+                }
+
+                // Lacet du cube : les points vus (dessus et faces laterales) projetes sur le plan horizontal
+                // tombent dans l'empreinte carree du cube, dont on prend le rectangle englobant minimal.
+                // Resultat dans [-pi/4, pi/4[ (le cube est invariant par rotation de pi/2)
+                bool compute_yaw(const Detection& detection, const cv::Mat& depth, double& yaw){
+
+                        // On ne garde que les points appartenant au cube : entre sa base (exclue, pour ne pas
+                        // prendre la table ou le cube du dessous) et son dessus, et pres de son axe vertical
+                        double z_min = detection.position.z() - cube_size_ / 2.0 + 0.005;
+                        double z_max = detection.position.z() + cube_size_ / 2.0 + 0.01;
+                        double max_radius = 0.75 * cube_size_;   // demi-diagonale ~ 0.71 * cote
+
+                        std::vector<cv::Point2f> footprint;
+                        for (const Eigen::Vector3d& p : reconstruct_points(detection.mask, depth, yaw_erode_px_)){
+                                if (p.z() < z_min || p.z() > z_max) continue;
+                                if (std::hypot(p.x() - detection.position.x(), p.y() - detection.position.y()) > max_radius) continue;
+                                footprint.emplace_back(p.x(), p.y());
+                        }
+
+                        if (static_cast<int>(footprint.size()) < yaw_min_points_) return false;
+
+                        cv::Point2f corners[4];
+                        cv::minAreaRect(footprint).points(corners);
+
+                        // Direction d'un cote du rectangle, dans le repere monde (x, y)
+                        double angle = std::atan2(corners[1].y - corners[0].y, corners[1].x - corners[0].x);
+                        yaw = angle - (M_PI / 2.0) * std::floor((angle + M_PI / 4.0) / (M_PI / 2.0));
                         return true;
                 }
 
@@ -263,18 +314,30 @@ class CubeDetector : public rclcpp::Node{
                                 // a la hauteur mesuree
                                 detection.position = pixel_to_world(detection.u, detection.v, msg->width, msg->height, center_z);
 
-                                geometry_msgs::msg::PointStamped point;
-                                point.header.stamp = msg->header.stamp;
-                                point.header.frame_id = "map";
-                                point.point.x = detection.position.x();
-                                point.point.y = detection.position.y();
-                                point.point.z = detection.position.z();
-                                detection.publisher->publish(point);
+                                if (!compute_yaw(detection, cv_depth->image, detection.yaw)){
+                                        RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 2000, "%s cube: not enough points for orientation", detection.name.c_str());
+                                        continue;
+                                }
+
+                                geometry_msgs::msg::PoseStamped pose;
+                                pose.header.stamp = msg->header.stamp;
+                                pose.header.frame_id = "map";
+                                pose.pose.position.x = detection.position.x();
+                                pose.pose.position.y = detection.position.y();
+                                pose.pose.position.z = detection.position.z();
+                                // Rotation de yaw autour de z
+                                pose.pose.orientation.z = std::sin(detection.yaw / 2.0);
+                                pose.pose.orientation.w = std::cos(detection.yaw / 2.0);
+                                detection.publisher->publish(pose);
 
                                 std::vector<std::vector<cv::Point>> contours = {detection.contour};
                                 cv::drawContours(debug, contours, 0, cv::Scalar(0, 255, 255), 5);
                                 cv::circle(debug, cv::Point(detection.u, detection.v), 15, cv::Scalar(255, 255, 255), -1);
-                                cv::putText(debug, detection.name + " z=" + std::to_string(static_cast<int>(std::round(detection.position.z() * 1000))) + "mm", cv::Point(detection.u + 30, detection.v),
+                                char label[64];
+                                std::snprintf(label, sizeof(label), "%s z=%dmm yaw=%ddeg", detection.name.c_str(),
+                                              static_cast<int>(std::round(detection.position.z() * 1000)),
+                                              static_cast<int>(std::round(detection.yaw * 180.0 / M_PI)));
+                                cv::putText(debug, label, cv::Point(detection.u + 30, detection.v),
                                             cv::FONT_HERSHEY_SIMPLEX, 3, cv::Scalar(255, 255, 255), 6);
                         }
 
@@ -295,6 +358,8 @@ class CubeDetector : public rclcpp::Node{
                 double cube_size_;
                 int depth_erode_px_;
                 double top_percentile_;
+                int yaw_erode_px_;
+                int yaw_min_points_;
 
                 rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub_;
                 rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;

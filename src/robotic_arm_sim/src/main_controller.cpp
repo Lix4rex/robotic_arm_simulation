@@ -8,7 +8,7 @@
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "robot_msgs/action/move_to_position.hpp"
 #include "std_srvs/srv/trigger.hpp"
-#include "geometry_msgs/msg/point_stamped.hpp"
+#include "geometry_msgs/msg/pose_stamped.hpp"
 
 using namespace std::chrono_literals;
 
@@ -32,9 +32,9 @@ class MainController : public rclcpp::Node{
 
                         for (const auto& cube : cubes){
                                 cubes_poses[cube] = Pose3D();
-                                cube_sub_[cube] = this->create_subscription<geometry_msgs::msg::PointStamped>(
+                                cube_sub_[cube] = this->create_subscription<geometry_msgs::msg::PoseStamped>(
                                         "/cube_detector/" + cube + "_cube", 10, 
-                                        [this, cube](const geometry_msgs::msg::PointStamped::SharedPtr msg){
+                                        [this, cube](const geometry_msgs::msg::PoseStamped::SharedPtr msg){
                                                 color_sub_callback(cube, msg);
                                         }
                                 );
@@ -58,6 +58,7 @@ class MainController : public rclcpp::Node{
                         float y_target = 0.0;
                         float z_target = 0.0;
                         float theta_target = 0.0;
+                        std::string cube_color = "Undefined";
                 };
 
                 unsigned long int nb_cube_placed = 0;
@@ -69,12 +70,15 @@ class MainController : public rclcpp::Node{
                         {State::OPEN_FINGERS, 0.0, 0.0, 0.0, 0.0}                        
                 };
 
+                std::list<Action> executed_actions;
+
                 // Tick State Machine
 
                 void tick(){
                         
                         const Action action = actions.front();
                         actions.pop_front();
+                        executed_actions.push_front(action);
 
                         switch(action.state){
                                 case State::FINISH:
@@ -128,6 +132,7 @@ class MainController : public rclcpp::Node{
                         float x = 0.0;
                         float y = 0.0;
                         float z = 0.0;
+                        float yaw = 0.0;
                         bool ready = false;
                 };
 
@@ -137,11 +142,12 @@ class MainController : public rclcpp::Node{
 
                 int moved_cube = 0;
 
-                std::map<std::string, rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr> cube_sub_;
-                void color_sub_callback(std::string color, const geometry_msgs::msg::PointStamped::SharedPtr msg){
-                        cubes_poses[color].x = msg->point.x;
-                        cubes_poses[color].y = msg->point.y;
-                        cubes_poses[color].z = msg->point.z;
+                std::map<std::string, rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr> cube_sub_;
+                void color_sub_callback(std::string color, const geometry_msgs::msg::PoseStamped::SharedPtr msg){
+                        cubes_poses[color].x = msg->pose.position.x;
+                        cubes_poses[color].y = msg->pose.position.y;
+                        cubes_poses[color].z = msg->pose.position.z;
+                        cubes_poses[color].yaw = 2.0f * std::atan2(msg->pose.orientation.z, msg->pose.orientation.w);
                         if (!cubes_poses[color].ready) cubes_poses[color].ready = true;
                 }
 
@@ -238,19 +244,20 @@ class MainController : public rclcpp::Node{
                                 moved_cube++;
                                 RCLCPP_INFO(this->get_logger(), "Il faut dépiler le cube %s\n", color_to_move.c_str());
 
+                                
                                 Pose3D cube_pose_other = cubes_poses[color_to_move];
 
                                 if (moved_cube == 1) drop_pose = find_drop_pose(&cube_pose);
 
-                                actions.push_back({State::MOVE_TO, cube_pose_other.x, cube_pose_other.y, cube_pose_other.z + 0.155f, 0.0});
-                                actions.push_back({State::MOVE_TO, cube_pose_other.x, cube_pose_other.y, cube_pose_other.z, 0.0});
-                                actions.push_back({State::CLOSE_FINGERS, 0.0, 0.0, 0.0, 0.0});
-                                actions.push_back({State::MOVE_TO, cube_pose_other.x, cube_pose_other.y, cube_pose_other.z + 0.255f, 0.0});
+                                actions.push_back({State::MOVE_TO, cube_pose_other.x, cube_pose_other.y, cube_pose_other.z + 0.155f, cube_pose_other.yaw, color_to_move});
+                                actions.push_back({State::MOVE_TO, cube_pose_other.x, cube_pose_other.y, cube_pose_other.z, cube_pose_other.yaw, color_to_move});
+                                actions.push_back({State::CLOSE_FINGERS, 0.0, 0.0, 0.0, 0.0, color_to_move});
+                                actions.push_back({State::MOVE_TO, cube_pose_other.x, cube_pose_other.y, cube_pose_other.z + 0.255f, cube_pose_other.yaw, color_to_move});
                                 
-                                actions.push_back({State::MOVE_TO, drop_pose.x, drop_pose.y, 1.3f + (moved_cube-1)*z_cube, 0.0});
-                                actions.push_back({State::MOVE_TO, drop_pose.x, drop_pose.y, z_floor + (moved_cube-1)*z_cube, 0.0});
-                                actions.push_back({State::OPEN_FINGERS, 0.0, 0.0, 0.0, 0.0});
-                                actions.push_back({State::MOVE_TO, drop_pose.x, drop_pose.y, 1.3f + nb_cube_placed*z_cube, 0.0});
+                                actions.push_back({State::MOVE_TO, drop_pose.x, drop_pose.y, 1.3f + (moved_cube-1)*z_cube, 0.0, color_to_move});
+                                actions.push_back({State::MOVE_TO, drop_pose.x, drop_pose.y, z_floor + (moved_cube-1)*z_cube, 0.0, color_to_move});
+                                actions.push_back({State::OPEN_FINGERS, 0.0, 0.0, 0.0, 0.0, color_to_move});
+                                actions.push_back({State::MOVE_TO, drop_pose.x, drop_pose.y, 1.3f + nb_cube_placed*z_cube, 0.0, color_to_move});
 
                                 actions.push_back({State::WAIT_FOR_MOVE, 0.0, 0.0, 0.0, 0.0});
 
@@ -259,15 +266,15 @@ class MainController : public rclcpp::Node{
 
                         float place_z = z_floor + nb_cube_placed*z_cube;
                         
-                        actions.push_back({State::MOVE_TO, cube_pose.x, cube_pose.y, cube_pose.z + 0.155f, 0.0});
-                        actions.push_back({State::MOVE_TO, cube_pose.x, cube_pose.y, cube_pose.z, 0.0});
-                        actions.push_back({State::CLOSE_FINGERS, 0.0, 0.0, 0.0, 0.0});
-                        actions.push_back({State::MOVE_TO, cube_pose.x, cube_pose.y, place_z + 0.15f, M_PI/4});
+                        actions.push_back({State::MOVE_TO, cube_pose.x, cube_pose.y, cube_pose.z + 0.155f, cube_pose.yaw, color_to_move});
+                        actions.push_back({State::MOVE_TO, cube_pose.x, cube_pose.y, cube_pose.z, cube_pose.yaw, color_to_move});
+                        actions.push_back({State::CLOSE_FINGERS, 0.0, 0.0, 0.0, 0.0, color_to_move});
+                        actions.push_back({State::MOVE_TO, cube_pose.x, cube_pose.y, place_z + 0.15f, M_PI/4, color_to_move});
                         
-                        actions.push_back({State::MOVE_TO, deposit_x, deposit_y, place_z + 0.15f, M_PI/4});
-                        actions.push_back({State::MOVE_TO, deposit_x, deposit_y, place_z, M_PI/4});
-                        actions.push_back({State::OPEN_FINGERS, 0.0, 0.0, 0.0, 0.0});
-                        actions.push_back({State::MOVE_TO, deposit_x, deposit_y, place_z + 0.15f, M_PI/4});
+                        actions.push_back({State::MOVE_TO, deposit_x, deposit_y, place_z + 0.15f, M_PI/4, color_to_move});
+                        actions.push_back({State::MOVE_TO, deposit_x, deposit_y, place_z + 0.01f, M_PI/4, color_to_move});
+                        actions.push_back({State::OPEN_FINGERS, 0.0, 0.0, 0.0, 0.0, color_to_move});
+                        actions.push_back({State::MOVE_TO, deposit_x, deposit_y, place_z + 0.15f, M_PI/4, color_to_move});
 
                         actions.push_back({State::CUBE_PLACED, 0.0, 0.0, 0.0, 0.0});
                 }
@@ -342,6 +349,17 @@ class MainController : public rclcpp::Node{
                         auto response = future.get();
                         if (!response->success){
                                 RCLCPP_ERROR(this->get_logger(), "Failed to close fingers : %s", response->message.c_str());
+                                RCLCPP_INFO(this->get_logger(), "Trying to correct the failure : %s", response->message.c_str());
+                                
+                                actions.pop_front();
+                                Action action = actions.front();
+                                action.z_target += 0.2f;
+                                
+                                Pose3D cube_pose = cubes_poses[action.cube_color];
+                                
+                                actions.push_front({State::CLOSE_FINGERS, 0.0, 0.0, 0.0, 0.0, action.cube_color});
+                                actions.push_front({State::MOVE_TO, cube_pose.x, cube_pose.y, cube_pose.z, cube_pose.yaw, action.cube_color});
+                                actions.push_front(action);
                                 return;
                         }
                         RCLCPP_INFO(this->get_logger(), "Fingers closed : %s", response->message.c_str());
