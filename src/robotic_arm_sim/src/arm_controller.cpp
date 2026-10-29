@@ -7,14 +7,116 @@
 
 #include <Eigen/Dense>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <numeric>
 #include <random>
+#include <string>
+#include <vector>
 
 using namespace std::chrono_literals;
 
 using MoveToPosition = robot_msgs::action::MoveToPosition;
 using GoalHandleMoveToPosition = rclcpp_action::ServerGoalHandle<MoveToPosition>;
+
+
+// =====================================================================================
+//  MPC (commande predictive) - version simple
+// =====================================================================================
+//
+//  Idee : a chaque pas de controle (100 Hz), on cherche les N prochaines vitesses
+//  articulaires u_0 ... u_{N-1} qui font le mieux suivre la reference sur l'horizon,
+//  on applique seulement u_0, puis on recommence au pas suivant (horizon glissant).
+//
+//  Modele de prediction (le meme pour chaque joint) :
+//
+//      q_{k+1} = q_k + dt * u_k      donc      q_k = q0 + dt * (u_0 + ... + u_{k-1})
+//
+//  Chaque terme du cout est un "residu" qui depend lineairement des u :
+//
+//      residu = a . U + b        a : coefficient de chaque u_j,   b : partie constante
+//
+//  Le cout est une somme de residus au carre. Son minimum est la ou sa derivee est nulle,
+//  ce qui donne un systeme lineaire : on obtient la solution exacte en une seule
+//  resolution, sans algorithme iteratif.
+
+using JointVector = Eigen::Matrix<double, 7, 1>;
+using JointReference = Eigen::Matrix<double, 7, Eigen::Dynamic>;
+
+struct MpcWeights {
+        double tracking;        // suivre la position de la reference
+        double terminal;        // bonus de suivi sur le dernier pas de l'horizon
+        double velocity;        // suivre la vitesse de la reference (evite le retard)
+        double acceleration;    // eviter les a-coups
+};
+
+// Accumule des termes  w * (a . U + b)^2  et renvoie le U qui minimise leur somme.
+// U est une matrice N x 7 : ligne k = vitesses des 7 joints au pas k. Les coefficients a
+// sont les memes pour tous les joints, seul b change : on resout les 7 joints d'un coup.
+class LeastSquares {
+        public:
+                explicit LeastSquares(int n) : H_(Eigen::MatrixXd::Zero(n, n)), G_(Eigen::MatrixXd::Zero(n, 7)) {}
+
+                void add(double w, const Eigen::VectorXd& a, const JointVector& b){
+                        H_ += w * a * a.transpose();
+                        G_ += w * a * b.transpose();
+                }
+
+                // Derivee du cout nulle  <=>  H * U = -G
+                Eigen::MatrixXd solve() const {
+                        return H_.ldlt().solve(-G_);
+                }
+
+        private:
+                Eigen::MatrixXd H_;
+                Eigen::MatrixXd G_;
+};
+
+// -------------------------------------------------------------------------------------
+//  FONCTION DE COUT
+// -------------------------------------------------------------------------------------
+//
+//  J = somme sur k = 1..N de
+//          w_tracking     * (q_k - q_ref_k)^2                   suivre la position
+//        + w_velocity     * (u_{k-1} - v_ref_k)^2                suivre la vitesse
+//        + w_acceleration * ((u_{k-1} - u_{k-2}) / dt)^2         pas d'a-coup (u_{-1} = u_prev)
+//    + w_terminal * (q_N - q_ref_N)^2                            bien finir l'horizon
+//
+//  q_ref : colonne k = reference a (t + k * dt), k = 0..N.
+//  C'est le seul endroit qui decide de "ce qu'est un bon mouvement" : pour changer le
+//  comportement du bras, on change les poids ou on ajoute un terme avec problem.add(...).
+//  Retourne U (N x 7), les vitesses optimales sur tout l'horizon.
+Eigen::MatrixXd solve_mpc(const MpcWeights& w, const JointVector& q0, const JointVector& u_prev,
+                          const JointReference& q_ref, double dt){
+        const int N = static_cast<int>(q_ref.cols()) - 1;
+        LeastSquares problem(N);
+
+        for (int k = 1; k <= N; k++){
+                // Vecteur qui selectionne u_{k-1}
+                Eigen::VectorXd u_k = Eigen::VectorXd::Zero(N);
+                u_k(k - 1) = 1.0;
+
+                // (1) Position : q_k - q_ref_k = dt * (u_0 + ... + u_{k-1}) + (q0 - q_ref_k)
+                Eigen::VectorXd sum_u = Eigen::VectorXd::Zero(N);
+                sum_u.head(k).setConstant(dt);
+                const double w_position = w.tracking + (k == N ? w.terminal : 0.0);
+                problem.add(w_position, sum_u, q0 - q_ref.col(k));
+
+                // (2) Vitesse : u_{k-1} - v_ref_k
+                const JointVector v_ref = (q_ref.col(k) - q_ref.col(k - 1)) / dt;
+                problem.add(w.velocity, u_k, -v_ref);
+
+                // (3) Acceleration : (u_{k-1} - u_{k-2}) / dt ; au premier pas u_{-1} = u_prev est connu
+                Eigen::VectorXd difference = u_k / dt;
+                JointVector known = JointVector::Zero();
+                if (k >= 2) difference(k - 2) = -1.0 / dt;
+                else known = -u_prev / dt;
+                problem.add(w.acceleration, difference, known);
+        }
+
+        return problem.solve();
+}
+
 
 class ArmController : public rclcpp::Node{
 
@@ -39,6 +141,24 @@ class ArmController : public rclcpp::Node{
                         reset_min_spacing_ = this->declare_parameter<double>("reset_min_spacing", 0.12);
                         reset_stack_probability_ = this->declare_parameter<double>("reset_stack_probability", 0.4);
                         reset_max_yaw_ = this->declare_parameter<double>("reset_max_yaw", M_PI / 4);
+
+                        // MPC : horizon (N pas de mpc_dt secondes) et poids de la fonction de cout
+                        mpc_horizon_ = this->declare_parameter<int>("mpc_horizon", 20);
+                        mpc_dt_ = std::max(1e-3, this->declare_parameter<double>("mpc_dt", 0.05));
+                        mpc_velocity_limit_ = this->declare_parameter<double>("mpc_velocity_limit", 5.0);
+                        mpc_weights_.tracking = this->declare_parameter<double>("mpc_weight_tracking", 100.0);
+                        mpc_weights_.terminal = this->declare_parameter<double>("mpc_weight_terminal", 500.0);
+                        mpc_weights_.velocity = this->declare_parameter<double>("mpc_weight_velocity", 1.0);
+                        mpc_weights_.acceleration = this->declare_parameter<double>("mpc_weight_acceleration", 0.05);
+                        goal_tolerance_ = this->declare_parameter<double>("goal_tolerance", 1e-3);
+                        settle_velocity_ = this->declare_parameter<double>("settle_velocity", 0.01);
+                        settle_timeout_ = this->declare_parameter<double>("settle_timeout", 2.0);
+
+                        // Butees physiques du Panda (rad)
+                        q_min_ << -2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973;
+                        q_max_ <<  2.8973,  1.7628,  2.8973, -0.0698,  2.8973,  3.7525,  2.8973;
+
+                        u_prev_.setZero();
 
                         // Position de depart des joints dans Gazebo (joint 4 en butee haute)
                         q_initial_ << 0.0, 0.0, 0.0, -0.0698, 0.0, 0.0, 0.0;
@@ -96,7 +216,7 @@ class ArmController : public rclcpp::Node{
                                 10ms, std::bind(&ArmController::trajectory_callback, this)
                         );
 
-                        RCLCPP_INFO(this->get_logger(), "ArmController successfuly launched");
+                        RCLCPP_INFO(this->get_logger(), "ArmController successfuly launched (MPC : N = %d, dt = %.3f s)", mpc_horizon_, mpc_dt_);
                 }
 
 
@@ -138,129 +258,219 @@ class ArmController : public rclcpp::Node{
                         panda_joint7_pub_->publish(msg);
                 }
 
-                // Trajectory
+                // Trajectoire de reference (suivie par le MPC)
+                //   Joint     : profil quintique de q_start_ vers q_goal_
+                //   Cartesian : ligne droite de la pince, chemin articulaire pre-calcule par IK
+                //   Hold      : freinage, la reference est la position courante
+                enum class ReferenceMode { Hold, Joint, Cartesian };
+
                 double max_joint_velocity_;
                 double min_trajectory_duration_;
+                double max_linear_velocity_;
                 Eigen::Matrix<double, 7, 1> q_initial_;
                 Eigen::Matrix<double, 7, 1> q_current_;
                 Eigen::Matrix<double, 7, 1> q_start_;
                 Eigen::Matrix<double, 7, 1> q_goal_;
                 std::chrono::steady_clock::time_point trajectory_start_;
                 double trajectory_duration_ = 0.0;
-                bool trajectory_active_ = false;
+                ReferenceMode reference_mode_ = ReferenceMode::Hold;
+                std::vector<JointVector> cartesian_path_;
+                static constexpr double cartesian_path_dt_ = 0.01;
                 rclcpp::TimerBase::SharedPtr trajectory_timer_;
 
-                // Trajectoire cartesienne : la pince (TCP) suit une ligne droite de p_start_ a p_goal_
-                // (repere de la base) et le yaw passe de theta_start_ a theta_goal_, pince toujours vers le bas
-                double max_linear_velocity_;
-                bool cartesian_ = false;
-                Eigen::Vector3d p_start_;
-                Eigen::Vector3d p_goal_;
-                double theta_start_ = 0.0;
-                double theta_goal_ = 0.0;
+                // MPC
+                MpcWeights mpc_weights_;
+                int mpc_horizon_;
+                double mpc_dt_;
+                double mpc_velocity_limit_; // vitesse articulaire max envoyee (rad/s)
+                JointVector q_min_, q_max_; // butees articulaires
+                JointVector u_prev_;        // derniere commande appliquee
+                bool mpc_running_ = false;
+                std::chrono::steady_clock::time_point last_control_time_;
+                double goal_tolerance_;     // ecart articulaire max pour considerer le but atteint (rad)
+                double settle_velocity_;    // vitesse max pour considerer le bras arrete (rad/s)
+                double settle_timeout_;     // temps accorde apres la fin de la reference pour converger (s)
 
-                // Interpolation de q_start_ vers q_goal_ avec un profil quintique :
-                // vitesse et acceleration nulles au depart et a l'arrivee, donc pas d'a-coup
+                static double quintic(double tau){
+                        return tau * tau * tau * (10.0 - 15.0 * tau + 6.0 * tau * tau);
+                }
+
+                // Position articulaire de la reference a t secondes du debut du mouvement
+                JointVector reference_at(double t) const {
+                        switch (reference_mode_){
+                                case ReferenceMode::Joint: {
+                                        const double tau = trajectory_duration_ > 0.0 ? std::min(t / trajectory_duration_, 1.0) : 1.0;
+                                        return q_start_ + quintic(tau) * (q_goal_ - q_start_);
+                                }
+                                case ReferenceMode::Cartesian: {
+                                        if (cartesian_path_.empty()) return q_goal_;
+                                        const double index = t / cartesian_path_dt_;
+                                        const size_t i = static_cast<size_t>(std::floor(index));
+                                        if (i + 1 >= cartesian_path_.size()) return cartesian_path_.back();
+                                        const double a = index - static_cast<double>(i);
+                                        return (1.0 - a) * cartesian_path_[i] + a * cartesian_path_[i + 1];
+                                }
+                                case ReferenceMode::Hold:
+                                default:
+                                        return q_current_;
+                        }
+                }
+
+                // Lance le MPC sur la nouvelle reference. S'il tournait deja (preemption), on garde
+                // la vitesse courante (u_prev_) : le terme d'acceleration rend la transition douce.
+                void start_motion(ReferenceMode mode){
+                        reference_mode_ = mode;
+                        trajectory_start_ = std::chrono::steady_clock::now();
+                        if (!mpc_running_){
+                                last_control_time_ = trajectory_start_;
+                                mpc_running_ = true;
+                        }
+                }
+
+                // Freinage en douceur sur place (au lieu d'un arret instantane)
+                void hold_position(){
+                        if (!mpc_running_) return;
+                        reference_mode_ = ReferenceMode::Hold;
+                        trajectory_start_ = std::chrono::steady_clock::now();
+                        trajectory_duration_ = 0.0;
+                }
+
+                // Reference articulaire : profil quintique, vitesse et acceleration nulles au depart et a l'arrivee
                 void start_trajectory(const Eigen::Matrix<double, 7, 1>& q_goal){
                         q_start_ = q_current_;
                         q_goal_ = q_goal;
-                        cartesian_ = false;
 
                         // Vitesse max du profil quintique = 1.875 * deplacement / duree
                         const double max_delta = (q_goal_ - q_start_).cwiseAbs().maxCoeff();
                         trajectory_duration_ = std::max(1.875 * max_delta / max_joint_velocity_, min_trajectory_duration_);
-                        trajectory_start_ = std::chrono::steady_clock::now();
-                        trajectory_active_ = true;
+                        start_motion(ReferenceMode::Joint);
 
                         RCLCPP_INFO(this->get_logger(), "Joint trajectory started (%.2f s)", trajectory_duration_);
                 }
 
-                // Meme profil quintique, mais applique a la position et au yaw de la pince ;
-                // les joints sont recalcules par IK a chaque pas (voir trajectory_callback)
-                void start_cartesian_trajectory(const Eigen::Vector3d& p_goal, double theta_goal, const Eigen::Matrix<double, 7, 1>& q_goal){
+                // Reference cartesienne : la pince (TCP) suit une ligne droite (profil quintique) et le yaw
+                // passe de sa valeur courante a theta_goal, pince toujours vers le bas. Le chemin articulaire
+                // est calcule une fois par IK, chaque point amorce par le precedent (pas de saut de
+                // configuration). Retourne false si l'IK echoue quelque part sur le chemin : rien ne bouge.
+                bool start_cartesian_trajectory(const Eigen::Vector3d& p_goal, double theta_goal, const Eigen::Matrix<double, 7, 1>& q_goal){
                         const Eigen::Matrix4d T = forward_kinematics_matrix(q_current_);
-                        p_start_ = T.block<3,1>(0,3);
-                        theta_start_ = std::atan2(T(1,0), T(0,0));
-                        p_goal_ = p_goal;
+                        const Eigen::Vector3d p_start = T.block<3,1>(0,3);
+                        const double theta_start = std::atan2(T(1,0), T(0,0));
                         // Plus court chemin en yaw (meme orientation a 2*pi pres)
-                        theta_goal_ = theta_start_ + std::remainder(theta_goal - theta_start_, 2.0 * M_PI);
-                        q_start_ = q_current_;
-                        q_goal_ = q_goal;
-                        cartesian_ = true;
+                        const double theta_end = theta_start + std::remainder(theta_goal - theta_start, 2.0 * M_PI);
 
                         // Duree limitee par la vitesse lineaire de la pince et par la vitesse des joints
-                        const double distance = (p_goal_ - p_start_).norm();
-                        const double max_delta = std::max((q_goal_ - q_start_).cwiseAbs().maxCoeff(), std::abs(theta_goal_ - theta_start_));
-                        trajectory_duration_ = std::max({
+                        const double distance = (p_goal - p_start).norm();
+                        const double max_delta = std::max((q_goal - q_current_).cwiseAbs().maxCoeff(), std::abs(theta_end - theta_start));
+                        const double duration = std::max({
                                 1.875 * distance / max_linear_velocity_,
                                 1.875 * max_delta / max_joint_velocity_,
                                 min_trajectory_duration_
                         });
-                        trajectory_start_ = std::chrono::steady_clock::now();
-                        trajectory_active_ = true;
 
-                        RCLCPP_INFO(this->get_logger(), "Cartesian trajectory started (%.2f s, %.3f m)", trajectory_duration_, distance);
-                }
-
-                void trajectory_callback(){
-                        if (!trajectory_active_) return;
-
-                        const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - trajectory_start_).count();
-                        const double tau = std::min(elapsed / trajectory_duration_, 1.0);
-                        const double s = tau * tau * tau * (10.0 - 15.0 * tau + 6.0 * tau * tau);
-
-                        if (cartesian_){
-                                const Eigen::Vector3d p = p_start_ + s * (p_goal_ - p_start_);
-                                const double theta = theta_start_ + s * (theta_goal_ - theta_start_);
-
-                                // IK amorcee par la consigne precedente : petit pas, donc convergence rapide
-                                // et pas de saut de configuration du bras en cours de route
-                                Eigen::Matrix<double, 7, 1> q = q_initial_;
+                        const int samples = static_cast<int>(std::ceil(duration / cartesian_path_dt_)) + 1;
+                        std::vector<JointVector> path;
+                        path.reserve(samples);
+                        JointVector q = q_current_;
+                        for (int i = 0; i < samples; i++){
+                                const double s = quintic(std::min(i * cartesian_path_dt_ / duration, 1.0));
+                                const Eigen::Vector3d p = p_start + s * (p_goal - p_start);
+                                const double theta = theta_start + s * (theta_end - theta_start);
                                 bool converged = false;
                                 inverse_kinematics(p, theta, q, converged);
-                                if (!converged){
-                                        stop_motion("IK did not converge along the Cartesian path");
-                                        return;
-                                }
-                                q_current_ = q;
-                        } else {
-                                q_current_ = q_start_ + s * (q_goal_ - q_start_);
-                        }
-                        publish_joint_positions(q_current_);
-
-                        if (!active_goal_) {
-                                if (tau >= 1.0){
-                                        trajectory_active_ = false;
-                                        // Retour a la pose initiale du reset termine : on replace les cubes
-                                        if (reset_request_header_) reset_cubes();
-                                }
-                                return;
+                                if (!converged) return false;
+                                path.push_back(q);
                         }
 
-                        // Annulation : on s'arrete a la position courante
-                        if (active_goal_->is_canceling()){
-                                trajectory_active_ = false;
+                        cartesian_path_ = std::move(path);
+                        q_start_ = q_current_;
+                        q_goal_ = cartesian_path_.back();
+                        trajectory_duration_ = duration;
+                        start_motion(ReferenceMode::Cartesian);
+
+                        RCLCPP_INFO(this->get_logger(), "Cartesian trajectory started (%.2f s, %.3f m)", trajectory_duration_, distance);
+                        return true;
+                }
+
+                // Boucle de controle MPC (100 Hz)
+                void trajectory_callback(){
+                        if (!mpc_running_) return;
+
+                        const auto now = std::chrono::steady_clock::now();
+                        const double control_dt = std::clamp(std::chrono::duration<double>(now - last_control_time_).count(), 0.0, 0.05);
+                        last_control_time_ = now;
+
+                        // Annulation : on freine en douceur a partir de la position courante
+                        if (active_goal_ && active_goal_->is_canceling()){
                                 auto result = std::make_shared<MoveToPosition::Result>();
                                 result->success = false;
                                 result->message = "Trajectory canceled";
                                 active_goal_->canceled(result);
                                 active_goal_.reset();
-                                RCLCPP_INFO(this->get_logger(), "Trajectory canceled");
+                                hold_position();
+                                RCLCPP_INFO(this->get_logger(), "Trajectory canceled, braking");
+                        }
+
+                        const double elapsed = std::chrono::duration<double>(now - trajectory_start_).count();
+
+                        // 1. Reference sur l'horizon : ou le bras devrait etre a t, t + dt, ..., t + N*dt
+                        JointReference q_ref(7, mpc_horizon_ + 1);
+                        for (int k = 0; k <= mpc_horizon_; k++){
+                                q_ref.col(k) = reference_at(elapsed + k * mpc_dt_);
+                        }
+
+                        // 2. Meilleures vitesses sur tout l'horizon (minimum de la fonction de cout)
+                        const Eigen::MatrixXd U = solve_mpc(mpc_weights_, q_current_, u_prev_, q_ref, mpc_dt_);
+
+                        // 3. On n'applique que la premiere, limitee a la vitesse max (horizon glissant)
+                        u_prev_ = U.row(0).transpose().cwiseMax(-mpc_velocity_limit_).cwiseMin(mpc_velocity_limit_);
+                        q_current_ += control_dt * u_prev_;
+                        q_current_ = q_current_.cwiseMax(q_min_).cwiseMin(q_max_);
+                        publish_joint_positions(q_current_);
+
+                        // 4. Fin du mouvement : reference terminee, bras arrete et sur le but
+                        const bool reference_done = reference_mode_ == ReferenceMode::Hold || elapsed >= trajectory_duration_;
+                        const bool stopped = u_prev_.cwiseAbs().maxCoeff() < settle_velocity_;
+                        const bool on_goal = reference_mode_ == ReferenceMode::Hold
+                                || (q_current_ - q_goal_).cwiseAbs().maxCoeff() < goal_tolerance_;
+                        if (reference_done && stopped && on_goal){
+                                finish_motion();
+                                return;
+                        }
+
+                        if (!active_goal_) return;
+
+                        if (reference_done && elapsed > trajectory_duration_ + settle_timeout_){
+                                stop_motion("MPC did not reach the goal within tolerance");
                                 return;
                         }
 
                         auto feedback = std::make_shared<MoveToPosition::Feedback>();
-                        feedback->progress = tau;
+                        feedback->progress = trajectory_duration_ > 0.0 ? std::min(elapsed / trajectory_duration_, 1.0) : 1.0;
                         active_goal_->publish_feedback(feedback);
+                }
 
-                        if (tau >= 1.0){
-                                trajectory_active_ = false;
+                void finish_motion(){
+                        mpc_running_ = false;
+                        u_prev_.setZero();
+
+                        if (reference_mode_ == ReferenceMode::Hold) return;
+
+                        // Ecart deja sous goal_tolerance_ : on termine exactement sur le but
+                        q_current_ = q_goal_;
+                        publish_joint_positions(q_current_);
+
+                        if (active_goal_){
                                 RCLCPP_INFO(this->get_logger(), "Trajectory finished");
                                 auto result = std::make_shared<MoveToPosition::Result>();
                                 result->success = true;
                                 result->message = "Trajectory finished";
                                 active_goal_->succeed(result);
                                 active_goal_.reset();
+                        }
+                        // Retour a la pose initiale du reset termine : on replace les cubes
+                        else if (reset_request_header_){
+                                reset_cubes();
                         }
                 }
 
@@ -271,6 +481,10 @@ class ArmController : public rclcpp::Node{
                 rclcpp_action::GoalResponse handle_goal(const rclcpp_action::GoalUUID & uuid, std::shared_ptr<const MoveToPosition::Goal> goal){
                         (void)uuid;
                         RCLCPP_INFO(this->get_logger(), "Received goal (%.3f, %.3f, %.3f, %.3f)", goal->x_target, goal->y_target, goal->z_target, goal->theta_target);
+                        if (reset_request_header_){
+                                RCLCPP_WARN(this->get_logger(), "Goal rejected : reset in progress");
+                                return rclcpp_action::GoalResponse::REJECT;
+                        }
                         return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
                 }
 
@@ -324,18 +538,26 @@ class ArmController : public rclcpp::Node{
                                 result->success = false;
                                 result->message = "IK did not converge";
                                 goal_handle->abort(result);
+                                hold_position();
                                 return;
                         }
-
-                        active_goal_ = goal_handle;
 
                         // Ligne droite seulement si la pince pointe deja vers le bas : sinon le yaw seul ne
                         // decrit pas l'orientation de depart (ex : pose initiale), on passe alors en joints
                         if (forward_kinematics_matrix(q_current_)(2,2) < -0.99){
-                                start_cartesian_trajectory(target, theta_target, q);
+                                if (!start_cartesian_trajectory(target, theta_target, q)){
+                                        auto result = std::make_shared<MoveToPosition::Result>();
+                                        result->success = false;
+                                        result->message = "IK did not converge along the Cartesian path";
+                                        goal_handle->abort(result);
+                                        hold_position();
+                                        return;
+                                }
                         } else {
                                 start_trajectory(q);
                         }
+
+                        active_goal_ = goal_handle;
                 }
 
                 Eigen::Matrix4d T10(double alpha1){
@@ -519,7 +741,7 @@ class ArmController : public rclcpp::Node{
                                 error.tail<3>() = rotation_error;
 
                                 if (position_error.norm() < position_tolerance && rotation_error.norm() < orientation_tolerance){
-                                        // DEBUG : appelee a chaque pas (100 Hz) pendant une trajectoire cartesienne
+                                        // DEBUG : appelee pour chaque point du chemin cartesien
                                         RCLCPP_DEBUG(this->get_logger(), "IK converged after %d iterations",iteration);
                                         converged = true;
                                         return q;
@@ -621,7 +843,7 @@ class ArmController : public rclcpp::Node{
                                 return;
                         }
 
-                        // La suite (reset_cubes) est lancee par trajectory_callback a la fin du mouvement
+                        // La suite (reset_cubes) est lancee par finish_motion a la fin du mouvement
                         RCLCPP_INFO(this->get_logger(), "Moving arm back to initial position...");
                         start_trajectory(q_initial_);
                 }
@@ -718,7 +940,7 @@ class ArmController : public rclcpp::Node{
                         reset_service_->send_response(*request_header, response);
                 }
 
-                // Arrete la trajectoire en cours et abandonne le goal actif
+                // Abandonne le goal actif et freine le bras en douceur (le MPC continue jusqu'a l'arret)
                 void stop_motion(const std::string& reason){
                         if (active_goal_ && active_goal_->is_active()){
                                 auto result = std::make_shared<MoveToPosition::Result>();
@@ -728,7 +950,7 @@ class ArmController : public rclcpp::Node{
                                 RCLCPP_WARN(this->get_logger(), "Active goal aborted : %s", reason.c_str());
                         }
                         active_goal_.reset();
-                        trajectory_active_ = false;
+                        hold_position();
                 }
 };
 
