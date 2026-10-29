@@ -1,9 +1,8 @@
 arm_controller:
   ros__parameters:
     test: true
-    max_joint_velocity: 0.8       # rad/s, vitesse max d une articulation pendant une trajectoire
-    min_trajectory_duration: 1.0  # s
-    max_linear_velocity: 0.2      # m/s, vitesse max de la pince pendant une trajectoire cartesienne
+    max_joint_velocity: 0.6       # rad/s, vitesse max d une articulation pendant une trajectoire
+    min_trajectory_duration: 0.8  # s
     reset_cubes: ["blue_cube", "red_cube", "green_cube", "yellow_cube", "cyan_cube", "magenta_cube"]
     reset_area_x: [0.2, 1.0]      # m, zone de tirage aleatoire des cubes au reset (table2 : x 0.394 -> 1.194)
     reset_area_y: [-0.6, 0.6]       # m, table2 : y -0.75 -> 0.75 (toute la table est vue par la camera)
